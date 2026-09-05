@@ -294,21 +294,22 @@ async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(requir
         {"role": "user", "content": body.content},
     ]
 
-    try:
-        answer = await llm_provider().chat(
-            model=settings.openrouter_reasoning_model,
-            messages=messages,
-        )
-    except Exception as exc:
-        raise HTTPException(502, f"OpenRouter request failed: {type(exc).__name__}") from exc
-
     citations = [{"id": item["id"], "source": item["source_label"]} for item in evidence]
-    with db() as conn:
-        conn.execute(
-            "INSERT INTO messages(id,conversation_id,role,content,citations,created_at) VALUES(?,?,'assistant',?,?,?)",
-            (str(uuid4()), conv_id, answer, json.dumps(citations), utcnow()),
-        )
-    return {"conversation_id": conv_id, "content": answer, "citations": citations}
+    async def stream_chat_response():
+        answer_parts: list[str] = []
+        try:
+            async for chunk in llm_provider().stream_chat(model=settings.openrouter_reasoning_model, messages=messages):
+                answer_parts.append(chunk)
+                yield f"event: token\ndata: {json.dumps({'content': chunk})}\n\n"
+        except Exception as exc:
+            yield f"event: error\ndata: {json.dumps({'detail': f'OpenRouter request failed: {type(exc).__name__}'})}\n\n"
+            return
+        answer = "".join(answer_parts)
+        with db() as conn:
+            conn.execute("INSERT INTO messages(id,conversation_id,role,content,citations,created_at) VALUES(?,?,'assistant',?,?,?)", (str(uuid4()), conv_id, answer, json.dumps(citations), utcnow()))
+        yield f"event: complete\ndata: {json.dumps({'conversation_id': conv_id, 'citations': citations})}\n\n"
+
+    return StreamingResponse(stream_chat_response(), status_code=201, media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/v1/incidents/{incident_id}/chat")

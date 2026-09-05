@@ -2,6 +2,7 @@ from http.client import HTTPException
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from collections.abc import AsyncIterator
 from typing import Any
 from uuid import uuid4
 
@@ -15,6 +16,8 @@ class LLMProvider(ABC):
     async def structured_generate(self, *, model: str, messages: list[dict], schema: dict) -> dict: ...
     @abstractmethod
     async def chat(self, *, model: str, messages: list[dict]) -> str: ...
+    @abstractmethod
+    async def stream_chat(self, *, model: str, messages: list[dict]) -> AsyncIterator[str]: ...
 
 
 class OpenRouterProvider(LLMProvider):
@@ -35,6 +38,20 @@ class OpenRouterProvider(LLMProvider):
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
 
+    async def stream_chat(self, *, model: str, messages: list[dict]) -> AsyncIterator[str]:
+        async with httpx.AsyncClient(timeout=60) as client:
+            async with client.stream("POST", self.endpoint, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}, json={"model": model, "messages": messages, "stream": True}) as response:
+                response.raise_for_status()
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = line[6:]
+                    if payload == "[DONE]":
+                        break
+                    content = json.loads(payload).get("choices", [{}])[0].get("delta", {}).get("content")
+                    if content:
+                        yield content
+
 
 class MockLLMProvider(LLMProvider):
     async def structured_generate(self, *, model: str, messages: list[dict], schema: dict) -> dict:
@@ -42,6 +59,10 @@ class MockLLMProvider(LLMProvider):
 
     async def chat(self, *, model: str, messages: list[dict]) -> str:
         return "The available evidence points to the highest-confidence finding. No remediation has been executed."
+
+    async def stream_chat(self, *, model: str, messages: list[dict]) -> AsyncIterator[str]:
+        for token in ("The available evidence points to the highest-confidence finding. ", "No remediation has been executed."):
+            yield token
 
 
 def llm_provider() -> LLMProvider:
