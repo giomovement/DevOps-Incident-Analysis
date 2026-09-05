@@ -1,0 +1,66 @@
+[
+  {
+    "timestamp": "2026-09-05T12:00:03.006Z",
+    "level": "WARN",
+    "service": "certificate-monitor",
+    "environment": "production",
+    "component": "cert-manager",
+    "correlation_id": "inc-tls-partner-api",
+    "message": "TLS certificate partner-api.example.com expires in 0 days; issuer=LetsEncrypt-R3 renewal_state=pending",
+    "not_after": "2026-09-05T12:05:00Z",
+    "namespace": "edge"
+  },
+  {
+    "timestamp": "2026-09-05T12:05:01.118Z",
+    "level": "ERROR",
+    "service": "api-gateway",
+    "environment": "production",
+    "component": "envoy",
+    "trace_id": "tr-gw-b118fd9",
+    "message": "TLS handshake failed for partner-api.example.com: x509 certificate has expired or is not yet valid",
+    "listener": "0.0.0.0:443",
+    "downstream_remote_address": "198.51.100.24"
+  },
+  {
+    "timestamp": "2026-09-05T12:05:18.873Z",
+    "level": "CRITICAL",
+    "service": "api-gateway",
+    "environment": "production",
+    "component": "availability-monitor",
+    "correlation_id": "inc-tls-partner-api",
+    "message": "External HTTPS endpoint unavailable due to expired TLS certificate; handshake failure rate=100%",
+    "endpoint": "https://partner-api.example.com",
+    "affected_regions": ["eu-west-1", "us-east-1"]
+  },
+  {
+    "timestamp": "2026-09-05T12:06:44.345Z",
+    "level": "ERROR",
+    "service": "cert-manager",
+    "environment": "production",
+    "component": "acme-client",
+    "correlation_id": "inc-tls-partner-api",
+    "message": "Certificate renewal failed: ACME DNS-01 challenge record not propagated before timeout; retry=5",
+    "dns_zone": "example.com",
+    "order": "acme-order-78419"
+  },
+  {
+    "timestamp": "2026-09-05T12:13:22.991Z",
+    "level": "INFO",
+    "service": "cert-manager",
+    "environment": "production",
+    "component": "acme-client",
+    "correlation_id": "inc-tls-partner-api",
+    "message": "Emergency certificate issued and Kubernetes TLS secret rotated; serial=62A9F037D4",
+    "not_after": "2026-12-04T12:12:57Z"
+  },
+  {
+    "timestamp": "2026-09-05T12:15:09.027Z",
+    "level": "INFO",
+    "service": "api-gateway",
+    "environment": "production",
+    "component": "availability-monitor",
+    "correlation_id": "inc-tls-partner-api",
+    "message": "HTTPS endpoint healthy in all regions; TLS handshake success rate=99.99%",
+    "endpoint": "https://partner-api.example.com"
+  }
+]

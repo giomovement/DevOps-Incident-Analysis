@@ -1,0 +1,66 @@
+[
+  {
+    "timestamp": "2026-09-05T10:20:00.000Z",
+    "level": "WARN",
+    "service": "logging-platform",
+    "environment": "production",
+    "component": "node-exporter",
+    "correlation_id": "inc-disk-prod-euw1-17",
+    "message": "Disk utilization high on node ip-10-24-17-83; mount=/var/lib/containerd usage=91.4% available_bytes=18341785600",
+    "cluster": "prod-euw1-01",
+    "node": "ip-10-24-17-83"
+  },
+  {
+    "timestamp": "2026-09-05T10:24:31.228Z",
+    "level": "ERROR",
+    "service": "logging-platform",
+    "environment": "production",
+    "component": "containerd",
+    "correlation_id": "inc-disk-prod-euw1-17",
+    "message": "Failed to unpack image layer: no space left on device; snapshotter=overlayfs image=registry.example.com/search-indexer:4.18.2",
+    "node": "ip-10-24-17-83",
+    "mount": "/var/lib/containerd"
+  },
+  {
+    "timestamp": "2026-09-05T10:25:03.604Z",
+    "level": "CRITICAL",
+    "service": "kubernetes-control-plane",
+    "environment": "production",
+    "component": "kubelet",
+    "correlation_id": "inc-disk-prod-euw1-17",
+    "message": "Node condition DiskPressure=True; pod eviction threshold met and image garbage collection freed 0 bytes",
+    "node": "ip-10-24-17-83",
+    "disk_usage_percent": 99.2
+  },
+  {
+    "timestamp": "2026-09-05T10:25:41.117Z",
+    "level": "WARN",
+    "service": "search-indexer",
+    "environment": "production",
+    "component": "kubernetes",
+    "correlation_id": "inc-disk-prod-euw1-17",
+    "message": "Kubernetes pod evicted due to ephemeral-storage pressure; pod=search-indexer-2 namespace=search",
+    "node": "ip-10-24-17-83",
+    "pod": "search-indexer-2"
+  },
+  {
+    "timestamp": "2026-09-05T10:31:52.842Z",
+    "level": "INFO",
+    "service": "kubernetes-control-plane",
+    "environment": "production",
+    "component": "autoscaler",
+    "correlation_id": "inc-disk-prod-euw1-17",
+    "message": "Affected node cordoned; replacement node ip-10-24-22-19 joined cluster and evicted workloads are rescheduling",
+    "replacement_node": "ip-10-24-22-19"
+  },
+  {
+    "timestamp": "2026-09-05T10:39:09.095Z",
+    "level": "INFO",
+    "service": "logging-platform",
+    "environment": "production",
+    "component": "node-exporter",
+    "correlation_id": "inc-disk-prod-euw1-17",
+    "message": "Disk pressure cleared after pruning orphaned container images; usage=63.8% all workloads healthy",
+    "node": "ip-10-24-17-83"
+  }
+]

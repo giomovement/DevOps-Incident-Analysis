@@ -1,0 +1,12 @@
+.env
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal
+data/
+apps/api/data/
+apps/web/.vinext/
+apps/web/dist/
+apps/web/node_modules/
+__pycache__/
+.pytest_cache/
+.venv/

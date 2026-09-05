@@ -1,0 +1,68 @@
+[
+  {
+    "timestamp": "2026-09-05T17:40:11.419Z",
+    "level": "WARN",
+    "service": "payment-orchestrator",
+    "environment": "production",
+    "component": "provider-client",
+    "trace_id": "tr-payment-9c118b",
+    "message": "Upstream payment provider latency elevated; provider=AcmePay operation=authorize p95_ms=3920 deadline_ms=5000",
+    "region": "eu-west-1",
+    "endpoint": "POST /v1/payments/authorize"
+  },
+  {
+    "timestamp": "2026-09-05T17:40:28.603Z",
+    "level": "ERROR",
+    "service": "payment-orchestrator",
+    "environment": "production",
+    "component": "provider-client",
+    "request_id": "req-pay-90f14a",
+    "message": "Upstream returned HTTP 429 rate limit exceeded; provider=AcmePay retry_after_seconds=30 attempt=3",
+    "provider_status": 429,
+    "payment_method": "card"
+  },
+  {
+    "timestamp": "2026-09-05T17:41:05.277Z",
+    "level": "ERROR",
+    "service": "payment-orchestrator",
+    "environment": "production",
+    "component": "circuit-breaker",
+    "correlation_id": "inc-payments-1740",
+    "message": "Payment dependency unavailable: circuit breaker opened after 58 consecutive 429 and 503 responses",
+    "provider": "AcmePay",
+    "failure_rate_percent": 76.4
+  },
+  {
+    "timestamp": "2026-09-05T17:42:12.912Z",
+    "level": "CRITICAL",
+    "service": "checkout-platform",
+    "environment": "production",
+    "component": "revenue-slo-monitor",
+    "correlation_id": "inc-payments-1740",
+    "message": "Payment authorization success rate dropped to 38.6%; estimated failed checkouts=2140 over 5 minutes",
+    "success_rate_percent": 38.6,
+    "estimated_revenue_impact_gbp": 187400
+  },
+  {
+    "timestamp": "2026-09-05T17:44:31.188Z",
+    "level": "INFO",
+    "service": "payment-orchestrator",
+    "environment": "production",
+    "component": "traffic-router",
+    "correlation_id": "inc-payments-1740",
+    "message": "Shifted 80% of card authorization traffic to secondary provider and enabled bounded exponential backoff with jitter",
+    "secondary_provider": "BackupPay",
+    "traffic_shift_percent": 80
+  },
+  {
+    "timestamp": "2026-09-05T17:49:52.530Z",
+    "level": "INFO",
+    "service": "checkout-platform",
+    "environment": "production",
+    "component": "revenue-slo-monitor",
+    "correlation_id": "inc-payments-1740",
+    "message": "Payment authorization success rate recovered to 99.1%; queue backlog drained and circuit breaker is half-open",
+    "success_rate_percent": 99.1,
+    "queued_requests": 0
+  }
+]

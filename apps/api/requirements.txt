@@ -1,0 +1,12 @@
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+email-validator==2.2.0
+argon2-cffi==25.1.0
+httpx==0.28.1
+pydantic-settings==2.10.1
+langgraph==0.6.7
+langgraph-checkpoint-sqlite==2.0.11
+dramatiq[redis]==1.18.0
+pytest==8.4.2
+pytest-asyncio==1.1.0

@@ -1,0 +1,2 @@
+.citation-button { display:inline-flex; gap:5px; align-items:center; margin:10px 8px 0 0; padding:0; border:0; background:transparent; color:var(--cyan); font:8px var(--font-geist-mono),monospace; cursor:pointer; }
+.citation-button svg { width:11px; }

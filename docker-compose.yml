@@ -1,0 +1,37 @@
+services:
+  web:
+    build: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api/v1
+    ports: ["3000:3000"]
+    depends_on: [api]
+  api:
+    build: ./apps/api
+    env_file: .env
+    environment:
+      DIAS_DATABASE_PATH: /data/incidents.sqlite3
+      DIAS_CHECKPOINT_PATH: /data/checkpoints.sqlite3
+      DIAS_STORAGE_PATH: /data/uploads
+      DIAS_ARTIFACT_PATH: /data/artifacts
+      DIAS_REDIS_URL: redis://redis:6379/0
+      DIAS_JOB_MODE: dramatiq
+    volumes: ["dias_data:/data"]
+    ports: ["8000:8000"]
+    depends_on: [redis]
+  worker:
+    build: ./apps/api
+    command: ["dramatiq", "app.worker", "--processes", "1", "--threads", "4"]
+    env_file: .env
+    environment:
+      DIAS_DATABASE_PATH: /data/incidents.sqlite3
+      DIAS_CHECKPOINT_PATH: /data/checkpoints.sqlite3
+      DIAS_STORAGE_PATH: /data/uploads
+      DIAS_ARTIFACT_PATH: /data/artifacts
+      DIAS_REDIS_URL: redis://redis:6379/0
+    volumes: ["dias_data:/data"]
+    depends_on: [redis]
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+volumes:
+  dias_data:

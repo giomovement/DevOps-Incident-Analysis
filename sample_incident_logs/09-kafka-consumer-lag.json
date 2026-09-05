@@ -1,0 +1,67 @@
+[
+  {
+    "timestamp": "2026-09-05T16:05:00.000Z",
+    "level": "WARN",
+    "service": "fulfilment-events-consumer",
+    "environment": "production",
+    "component": "kafka-monitor",
+    "correlation_id": "inc-kafka-lag-1605",
+    "message": "Kafka consumer lag growing; group=fulfilment-v3 topic=order-events total_lag=184220 oldest_message_age_seconds=96",
+    "cluster": "kafka-prod-euw1",
+    "partitions": 48
+  },
+  {
+    "timestamp": "2026-09-05T16:06:12.801Z",
+    "level": "ERROR",
+    "service": "fulfilment-events-consumer",
+    "environment": "production",
+    "component": "event-handler",
+    "trace_id": "tr-order-event-409a2",
+    "message": "Event processing timeout after 30000ms; topic=order-events partition=17 offset=882419 dependency=warehouse-routing-api",
+    "consumer_group": "fulfilment-v3",
+    "delivery_attempt": 4
+  },
+  {
+    "timestamp": "2026-09-05T16:06:43.177Z",
+    "level": "WARN",
+    "service": "fulfilment-events-consumer",
+    "environment": "production",
+    "component": "kafka-client",
+    "correlation_id": "inc-kafka-lag-1605",
+    "message": "Consumer group rebalance repeated 19 times in 10 minutes; member heartbeat missed due to processing latency",
+    "consumer_group": "fulfilment-v3",
+    "rebalance_count": 19
+  },
+  {
+    "timestamp": "2026-09-05T16:08:04.516Z",
+    "level": "CRITICAL",
+    "service": "fulfilment-platform",
+    "environment": "production",
+    "component": "business-slo-monitor",
+    "correlation_id": "inc-kafka-lag-1605",
+    "message": "Order fulfilment pipeline delayed; Kafka lag=792441 and 12840 shipments have not been scheduled within SLA",
+    "oldest_message_age_seconds": 611,
+    "orders_delayed": 12840
+  },
+  {
+    "timestamp": "2026-09-05T16:12:38.922Z",
+    "level": "INFO",
+    "service": "fulfilment-events-consumer",
+    "environment": "production",
+    "component": "kubernetes",
+    "correlation_id": "inc-kafka-lag-1605",
+    "message": "Scaled consumers from 12 to 36 replicas and isolated poison message offset=882419 to dead-letter topic",
+    "dead_letter_topic": "order-events-dlq",
+    "replicas": 36
+  },
+  {
+    "timestamp": "2026-09-05T16:26:40.110Z",
+    "level": "INFO",
+    "service": "fulfilment-events-consumer",
+    "environment": "production",
+    "component": "kafka-monitor",
+    "correlation_id": "inc-kafka-lag-1605",
+    "message": "Consumer lag recovered to 214 events; oldest_message_age_seconds=2 and shipment scheduling SLA is healthy",
+    "consumer_group": "fulfilment-v3"
+  }
+]

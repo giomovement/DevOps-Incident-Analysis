@@ -1,0 +1,66 @@
+[
+  {
+    "timestamp": "2026-09-05T11:45:12.419Z",
+    "level": "WARN",
+    "service": "catalog-api",
+    "environment": "production",
+    "component": "http-client",
+    "trace_id": "tr-catalog-3bd89f1",
+    "message": "DNS lookup latency elevated for inventory.service.consul; duration_ms=2180 resolver=10.96.0.10",
+    "region": "eu-central-1",
+    "endpoint": "GET /v2/items/sku-18421"
+  },
+  {
+    "timestamp": "2026-09-05T11:45:20.004Z",
+    "level": "ERROR",
+    "service": "catalog-api",
+    "environment": "production",
+    "component": "http-client",
+    "request_id": "req-c2a771e9",
+    "message": "Upstream request failed: DNS resolution timeout for inventory.service.consul after 5000ms",
+    "retry_count": 3,
+    "http_status": 502
+  },
+  {
+    "timestamp": "2026-09-05T11:46:02.716Z",
+    "level": "ERROR",
+    "service": "coredns",
+    "environment": "production",
+    "component": "kubernetes-dns",
+    "correlation_id": "inc-dns-euc1-1145",
+    "message": "DNS plugin errors: read udp 10.96.0.10:43812 to 10.0.0.2:53: i/o timeout; query=inventory.service.consul A",
+    "cluster": "prod-euc1-02",
+    "pod": "coredns-7db6d8ff4d-fpz7n"
+  },
+  {
+    "timestamp": "2026-09-05T11:47:18.991Z",
+    "level": "CRITICAL",
+    "service": "platform-networking",
+    "environment": "production",
+    "component": "synthetic-monitor",
+    "correlation_id": "inc-dns-euc1-1145",
+    "message": "DNS failure affects 14 services in cluster prod-euc1-02; aggregate HTTP 5xx rate=42.1%",
+    "affected_services": 14,
+    "error_rate_percent": 42.1
+  },
+  {
+    "timestamp": "2026-09-05T11:51:36.302Z",
+    "level": "INFO",
+    "service": "platform-networking",
+    "environment": "production",
+    "component": "network-controller",
+    "correlation_id": "inc-dns-euc1-1145",
+    "message": "Rolled back network policy revision netpol-9381 that blocked CoreDNS egress to upstream resolver on UDP port 53",
+    "change_id": "chg-2026-0905-441"
+  },
+  {
+    "timestamp": "2026-09-05T11:54:04.650Z",
+    "level": "INFO",
+    "service": "coredns",
+    "environment": "production",
+    "component": "kubernetes-dns",
+    "correlation_id": "inc-dns-euc1-1145",
+    "message": "DNS resolution success rate restored to 99.99%; p95 lookup latency=12ms",
+    "cluster": "prod-euc1-02"
+  }
+]
