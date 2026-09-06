@@ -18,4 +18,16 @@ The frontend also runs with `npm run dev` from `apps/web`. The API runs with `uv
 - Every Slack/Jira write requires a Responder or Admin to approve the exact payload hash.
 - Slack and Jira use deterministic mock adapters by default.
 
+## Connect Slack
+
+Create a Slack app for the target workspace, add the `chat:write` bot scope, install it, and invite the bot to the incident channel. Then update the uncommitted `.env` file:
+
+```dotenv
+DIAS_INTEGRATIONS_MODE=official
+DIAS_SLACK_BOT_TOKEN=xoxb-... # bot token; never commit this value
+DIAS_SLACK_DEFAULT_CHANNEL=C0123456789 # Slack channel ID
+```
+
+Restart the API and worker containers, then use **Settings → Integrations → Test connection**. Analysis still only creates a draft; `chat.postMessage` is called solely when a Responder or Admin approves that draft.
+
 See [ARCHITECTURE.md](ARCHITECTURE.md) for contracts, data flow, threat boundaries, and production migration guidance.

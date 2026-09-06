@@ -22,6 +22,10 @@ class Settings(BaseSettings):
     openrouter_extraction_model: str | None = None
     openrouter_reasoning_model: str | None = None
     slack_bot_token: str | None = None
+    # Use a channel ID (for example C0123456789), rather than a display name.
+    # IDs remain stable if a Slack channel is renamed.
+    slack_default_channel: str = "#incidents"
+    slack_default_channel_name: str | None = None
     jira_access_token: str | None = None
     jira_cloud_id: str | None = None
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DIAS_", extra="ignore")

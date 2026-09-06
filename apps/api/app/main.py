@@ -15,8 +15,8 @@ from .auth import authenticate, create_user, current_user, digest, issue_session
 from .config import settings
 from .database import db, init_db, row_dict, utcnow
 from .orchestrator import run_analysis
-from .providers import delivery_adapter, llm_provider
-from .schemas import ActionDecision, ChatRequest, IncidentCreate, LoginRequest, SignupRequest
+from .providers import delivery_adapter, integration_available, llm_provider, slack_channel_label
+from .schemas import ActionDecision, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, SignupRequest
 
 ALLOWED_EXTENSIONS = {".log", ".txt", ".json", ".jsonl", ".csv"}
 ALLOWED_MIME = {"text/plain", "application/json", "application/x-ndjson", "text/csv", "application/csv", "application/octet-stream"}
@@ -100,6 +100,43 @@ def get_incident(incident_id: str, user=Depends(current_user)):
         incident["actions"]=[{**dict(r),"payload":json.loads(r["payload"])} for r in conn.execute("SELECT * FROM action_drafts WHERE incident_id=? ORDER BY created_at DESC",(incident_id,)).fetchall()]
         book=conn.execute("SELECT id,markdown,created_at,updated_at FROM cookbooks WHERE incident_id=?",(incident_id,)).fetchone(); incident["cookbook"]=dict(book) if book else None
     return incident
+
+
+@app.patch("/api/v1/incidents/{incident_id}/status")
+def update_incident_status(incident_id: str, body: IncidentStatusUpdate, user=Depends(require_responder)):
+    now = utcnow()
+    with db() as conn:
+        incident = owned_incident(conn, incident_id, user)
+        previous_status = incident["status"] if incident["status"] in ("active", "resolved") else "active"
+        if previous_status == body.status:
+            return {"status": body.status, "event": None}
+        resolved_at = now if body.status == "resolved" else None
+        conn.execute(
+            "UPDATE incidents SET status=?,resolved_at=?,updated_at=?,version=version+1 WHERE id=?",
+            (body.status, resolved_at, now, incident_id),
+        )
+        run = conn.execute("SELECT id FROM runs WHERE incident_id=? ORDER BY created_at DESC LIMIT 1", (incident_id,)).fetchone()
+        event = None
+        if run:
+            message = f"Incident status changed from {previous_status.upper()} to {body.status.upper()} by {user['display_name']}"
+            cursor = conn.execute(
+                "INSERT INTO workflow_events(run_id,phase,status,message,payload,created_at) VALUES(?,'incident_status','completed',?,?,?)",
+                (run["id"], message, json.dumps({"from": previous_status, "to": body.status, "actor_id": user["id"]}), now),
+            )
+            event = {
+                "id": cursor.lastrowid,
+                "run_id": run["id"],
+                "phase": "incident_status",
+                "status": "completed",
+                "message": message,
+                "payload": {"from": previous_status, "to": body.status, "actor_id": user["id"]},
+                "created_at": now,
+            }
+    audit(
+        user["workspace_id"], user["id"], "incident.status_changed", incident_id, "incident", incident_id,
+        {"from": previous_status, "to": body.status},
+    )
+    return {"status": body.status, "event": event}
 
 
 @app.delete("/api/v1/incidents/{incident_id}", status_code=204)
@@ -324,6 +361,7 @@ def decide_action(action_id:str,body:ActionDecision,decision:str,user:dict):
         action=conn.execute("SELECT a.* FROM action_drafts a JOIN incidents i ON i.id=a.incident_id WHERE a.id=? AND i.workspace_id=?",(action_id,user["workspace_id"])).fetchone()
         if not action: raise HTTPException(404,"Action not found")
         if action["status"]!="pending": raise HTTPException(409,"Action already decided")
+        if not integration_available(action["kind"]): raise HTTPException(409,f"{action['kind'].title()} is not available. Configure and test an official integration before deciding this action")
         if not secrets.compare_digest(action["payload_hash"],body.payload_hash): raise HTTPException(409,"Draft changed; review the current payload")
         approval_id=str(uuid4());conn.execute("INSERT INTO approvals(id,action_id,payload_hash,decision,approver_id,comment,created_at) VALUES(?,?,?,?,?,?,?)",(approval_id,action_id,body.payload_hash,decision,user["id"],body.comment,utcnow()))
         if decision=="rejected": conn.execute("UPDATE action_drafts SET status='rejected',updated_at=? WHERE id=?",(utcnow(),action_id)); result={"status":"rejected"}
@@ -333,6 +371,12 @@ def decide_action(action_id:str,body:ActionDecision,decision:str,user:dict):
             else:
                 adapter=delivery_adapter(action["kind"]); delivered=adapter.deliver(destination=action["destination"],payload=json.loads(action["payload"]),idempotency_key=action["idempotency_key"]); delivery_id=str(uuid4())
                 conn.execute("INSERT INTO deliveries(id,action_id,provider,destination,status,attempts,external_id,external_url,delivered_at) VALUES(?,?,?,?, 'delivered',1,?,?,?)",(delivery_id,action_id,action["kind"],action["destination"],delivered["external_id"],delivered.get("external_url"),utcnow()));conn.execute("UPDATE action_drafts SET status='delivered',updated_at=? WHERE id=?",(utcnow(),action_id));result={"id":delivery_id,"status":"delivered",**delivered}
+        pending=conn.execute("SELECT 1 FROM action_drafts WHERE run_id=? AND status='pending' LIMIT 1",(action["run_id"],)).fetchone()
+        if not pending:
+            completed_at=utcnow()
+            updated=conn.execute("UPDATE runs SET status='completed',current_phase='complete',completed_at=? WHERE id=? AND status='awaiting_approval'",(completed_at,action["run_id"]))
+            if updated.rowcount:
+                conn.execute("INSERT INTO workflow_events(run_id,phase,status,message,payload,created_at) VALUES(?,'complete','completed','Analysis and human review complete','{}',?)",(action["run_id"],completed_at))
     audit(user["workspace_id"],user["id"],f"action.{decision}",action["incident_id"],"action",action_id);return result
 
 
@@ -353,12 +397,25 @@ def export_cookbook(incident_id:str,user=Depends(current_user)):
 
 
 @app.get("/api/v1/integrations")
-def integrations(user=Depends(current_user)):
-    return [{"provider":p,"status":"connected","mode":"mock","display_name":f"{p.title()} sandbox"} for p in ("slack","jira")]
+def integrations(verify:bool=False,user=Depends(current_user)):
+    slack_official = settings.integrations_mode == "official" and bool(settings.slack_bot_token)
+    jira_official = settings.integrations_mode == "official" and bool(settings.jira_access_token and settings.jira_cloud_id)
+    slack_ready = integration_available("slack",verify=verify)
+    jira_ready = integration_available("jira",verify=verify)
+    configured_label = settings.slack_default_channel_name.lstrip("#") if settings.slack_default_channel_name else None
+    slack_destination = configured_label or (slack_channel_label(settings.slack_default_channel) if verify and slack_ready else settings.slack_default_channel)
+    return [
+        {"provider":"slack", "status":"connected" if verify and slack_ready else "configured" if slack_official else "sandbox", "mode":"official" if slack_official else "mock", "available":slack_ready, "display_name":"Slack workspace" if slack_official else "Slack sandbox", "destination":slack_destination},
+        {"provider":"jira", "status":"connected" if verify and jira_ready else "configured" if jira_official else "sandbox", "mode":"official" if jira_official else "mock", "available":jira_ready, "display_name":"Jira Cloud" if jira_official else "Jira sandbox"},
+    ]
 @app.post("/api/v1/integrations/{provider}/test")
 def test_integration(provider:str,user=Depends(require_responder)):
     if provider not in ("slack","jira"): raise HTTPException(404,"Unknown integration")
-    result=delivery_adapter(provider).test();audit(user["workspace_id"],user["id"],"integration.tested",target_type="integration",target_id=provider);return result
+    try:
+        result=delivery_adapter(provider).test()
+    except Exception as exc:
+        raise HTTPException(503, f"{provider.title()} connection test failed: {str(exc)[:180]}") from exc
+    audit(user["workspace_id"],user["id"],"integration.tested",target_type="integration",target_id=provider);return result
 
 
 @app.get("/api/v1/audit")

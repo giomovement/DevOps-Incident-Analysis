@@ -11,6 +11,7 @@ from langgraph.graph import END, START, StateGraph
 from .config import settings
 from .database import db, utcnow
 from .parsing import classify, parse_file
+from .providers import integration_available
 from .schemas import IncidentState
 
 PHASES = ["validate_upload", "parse", "classify", "correlate", "recommend", "draft_actions", "review", "cookbook", "complete"]
@@ -130,20 +131,28 @@ def draft_actions(state: IncidentState) -> dict:
         return {"slack_drafts": [], "jira_drafts": [], "completed_nodes": ["draft_actions"]}
     top = sorted(state["findings"], key=lambda f: ({"critical": 4, "high": 3, "medium": 2, "low": 1}[f["severity"]], f["confidence"]), reverse=True)[0]
     incident_id, run_id = state["incident_id"], state["run_id"]
-    slack = {"text": f"[{top['severity'].upper()}] {top['root_cause']}\nService: {top['service']} · Confidence: {top['confidence']:.0%}\nEvidence: {len(top['evidence_ids'])} cited excerpt(s)\nNext: Review containment and validation checklist."}
+    slack = {"text": f"[{top['severity'].upper()}] {top['root_cause']}\nService: {top['service']}\nConfidence: {top['confidence']:.0%}\nEvidence: {len(top['evidence_ids'])} cited excerpt(s)\nNext: Review containment and validation checklist."}
     drafts = []
     with db() as conn:
-        for kind, destination, payload in [("slack", "#incidents", slack)]:
+        if integration_available("slack"):
+            kind, destination, payload = "slack", settings.slack_default_channel, slack
             raw = json.dumps(payload, sort_keys=True); payload_hash = hashlib.sha256(raw.encode()).hexdigest(); did = str(uuid4())
-            conn.execute("INSERT INTO action_drafts(id,incident_id,run_id,kind,destination,payload,payload_hash,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (did, incident_id, run_id, kind, destination, raw, payload_hash, hashlib.sha256(f"{incident_id}:{kind}:{payload_hash}".encode()).hexdigest(), utcnow(), utcnow()))
+            # Slack's client_msg_id requires a UUID.  Keeping it with the immutable
+            # draft lets a safe retry use the same provider-level idempotency key.
+            conn.execute("INSERT INTO action_drafts(id,incident_id,run_id,kind,destination,payload,payload_hash,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (did, incident_id, run_id, kind, destination, raw, payload_hash, str(uuid4()), utcnow(), utcnow()))
             drafts.append({"id": did, "kind": kind, "destination": destination, "payload": payload, "payload_hash": payload_hash})
         jira_drafts = []
         if top["severity"] == "critical":
+            jira_status = "pending" if integration_available("jira") else "unavailable"
             payload = {"summary": f"[{top['severity'].upper()}] {top['root_cause']}", "description": top["rationale"], "priority": "Highest", "labels": ["dias", incident_id]}
             raw = json.dumps(payload, sort_keys=True); payload_hash = hashlib.sha256(raw.encode()).hexdigest(); did = str(uuid4())
-            conn.execute("INSERT INTO action_drafts(id,incident_id,run_id,kind,destination,payload,payload_hash,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (did, incident_id, run_id, "jira", "OPS", raw, payload_hash, hashlib.sha256(f"{incident_id}:jira:{payload_hash}".encode()).hexdigest(), utcnow(), utcnow()))
-            jira_drafts.append({"id": did, "kind": "jira", "destination": "OPS", "payload": payload, "payload_hash": payload_hash})
-    emit(run_id, "review", "waiting", f"{len(drafts) + len(jira_drafts)} external action(s) require human approval")
+            conn.execute("INSERT INTO action_drafts(id,incident_id,run_id,kind,destination,payload,payload_hash,idempotency_key,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (did, incident_id, run_id, "jira", "OPS", raw, payload_hash, str(uuid4()), jira_status, utcnow(), utcnow()))
+            jira_drafts.append({"id": did, "kind": "jira", "destination": "OPS", "payload": payload, "payload_hash": payload_hash, "status": jira_status})
+    pending_drafts = drafts + [draft for draft in jira_drafts if draft["status"] == "pending"]
+    if not pending_drafts:
+        emit(run_id, "draft_actions", "completed", "No actionable drafts created; unavailable integrations remain preview-only")
+        return {"slack_drafts": [], "jira_drafts": jira_drafts, "current_phase": "draft_actions", "completed_nodes": ["draft_actions"]}
+    emit(run_id, "review", "waiting", f"{len(pending_drafts)} external action(s) require human approval")
     return {"slack_drafts": drafts, "jira_drafts": jira_drafts, "status": "awaiting_approval", "current_phase": "review", "completed_nodes": ["draft_actions"]}
 
 
@@ -167,10 +176,12 @@ def cookbook(state: IncidentState) -> dict:
 
 
 def finish(state: IncidentState) -> dict:
-    status = "cancelled" if state.get("cancel_requested") else ("awaiting_approval" if state.get("slack_drafts") or state.get("jira_drafts") else "completed")
+    drafts = state.get("slack_drafts", []) + state.get("jira_drafts", [])
+    status = "cancelled" if state.get("cancel_requested") else ("awaiting_approval" if any(draft.get("status", "pending") == "pending" for draft in drafts) else "completed")
     with db() as conn:
-        conn.execute("UPDATE runs SET status=?,current_phase=?,completed_at=? WHERE id=?", (status, "review" if status == "awaiting_approval" else "complete", utcnow(), state["run_id"]))
-        conn.execute("UPDATE incidents SET status=?,severity=?,updated_at=? WHERE id=?", ("active" if state.get("findings") else "monitoring", max((f["severity"] for f in state.get("findings", [])), default="low", key=lambda x: {"low":1,"medium":2,"high":3,"critical":4}[x]), utcnow(), state["incident_id"]))
+        completed_at = None if status == "awaiting_approval" else utcnow()
+        conn.execute("UPDATE runs SET status=?,current_phase=?,completed_at=? WHERE id=?", (status, "review" if status == "awaiting_approval" else "complete", completed_at, state["run_id"]))
+        conn.execute("UPDATE incidents SET severity=?,updated_at=? WHERE id=?", (max((f["severity"] for f in state.get("findings", [])), default="low", key=lambda x: {"low":1,"medium":2,"high":3,"critical":4}[x]), utcnow(), state["incident_id"]))
     emit(state["run_id"], "complete", status, "Analysis complete; external actions remain human-controlled" if status == "awaiting_approval" else "Analysis complete")
     return {"status": status, "current_phase": "complete", "completed_nodes": ["complete"]}
 

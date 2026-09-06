@@ -20,7 +20,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 );
 CREATE TABLE IF NOT EXISTS incidents (
   id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, title TEXT NOT NULL, description TEXT,
-  service TEXT, environment TEXT, deployment TEXT, status TEXT NOT NULL DEFAULT 'draft',
+  service TEXT, environment TEXT, deployment TEXT, status TEXT NOT NULL DEFAULT 'active',
   severity TEXT, created_by TEXT NOT NULL REFERENCES users(id), created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL, resolved_at TEXT, version INTEGER NOT NULL DEFAULT 1
 );
@@ -119,6 +119,7 @@ def init_db() -> None:
     settings.ensure_directories()
     with sqlite3.connect(settings.database_path) as conn:
         conn.executescript(SCHEMA)
+        conn.execute("UPDATE incidents SET status='active' WHERE status NOT IN ('active','resolved')")
         conn.execute("PRAGMA optimize")
 
 
