@@ -264,6 +264,10 @@ def utcnow() -> str:
 
 def init_db() -> None:
     if using_postgres():
+        # Neon is the durable database on Vercel, while uploaded log files use
+        # the ephemeral /tmp directory. Ensure that directory exists on every
+        # cold start before handling an upload request.
+        settings.ensure_directories()
         import psycopg
 
         with psycopg.connect(settings.database_url) as conn:
