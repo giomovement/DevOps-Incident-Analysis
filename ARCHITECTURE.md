@@ -129,7 +129,7 @@ flowchart LR
     H --> X[Slack or Jira adapter]
 ```
 
-Although the interface describes these phases as “agents,” the current implementation uses specialized deterministic Python functions inside one LangGraph workflow. They behave like a coordinated team with separate responsibilities, but they are not separate autonomous processes, and the active graph does not call an LLM. `providers.py` defines OpenRouter and mock LLM interfaces for model-backed expansion, but they are not wired into `orchestrator.py` today.
+The phases run as specialized functions inside one LangGraph workflow rather than as separate autonomous processes. Recommend and Cookbook use the configured OpenRouter reasoning model with strict structured-output contracts. Both retain their deterministic implementations as automatic fallbacks when provider configuration, requests, or output validation fail.
 
 ### Specialist stages and responsibilities
 
@@ -137,9 +137,9 @@ Although the interface describes these phases as “agents,” the current imple
 2. **Parse (`parse_logs`)** reads each stored file through the appropriate parser, combines multiline text records, normalizes timestamps to UTC, maps log levels to a common severity scale, extracts service/environment/correlation IDs, masks likely secrets, hashes the cleaned message, and writes searchable events. A malformed file can be marked partial while other usable files continue.
 3. **Classify (`classify_events`)** selects actionable-looking events and applies ordered pattern rules for security, databases, networking, capacity, deployment regressions, dependencies, performance, authentication, infrastructure, and general application errors. It groups matches by issue type and service, assigns severity/confidence, and saves a finding with exact-line evidence.
 4. **Correlate (`correlate`)** groups events that share a trace, request, or correlation ID and records their counts and time range. This helps show that records from different moments may belong to the same request or failure chain.
-5. **Recommend (`remediate`)** creates cautious checklists for triage, containment, diagnosis, remediation, validation, and rollback. The language deliberately requires an operator to validate prerequisites and favors small, reversible changes.
+5. **Recommend (`remediate_with_ai`)** sends bounded, already-redacted finding evidence to OpenRouter and requires one structured plan per finding across triage, containment, diagnosis, remediation, validation, and rollback. It validates finding IDs and every required phase before persistence, then falls back to `remediate` if AI generation is unavailable or invalid.
 6. **Draft Actions (`draft_actions`)** selects the highest-priority finding and creates an immutable Slack preview. A critical finding also creates a Jira preview. Each payload receives a content hash and idempotency key so a changed or repeated request cannot silently deliver different or duplicate content.
-7. **Cookbook (`cookbook`)** combines and deduplicates recommendation steps into a Markdown incident-response guide, stores it in SQLite, and writes an exportable artifact file.
+7. **Cookbook (`cookbook_with_ai`)** asks OpenRouter to synthesize the incident context, findings, and recommendations into an operator-focused Markdown guide. Required headings and checklist syntax are validated before the guide is stored in SQLite and written as an exportable artifact; `cookbook` remains the fallback.
 8. **Finish (`finish`)** updates the run and incident. A run with action drafts becomes `awaiting_approval`; otherwise it completes. The incident becomes `active` when findings exist or `monitoring` when none were found.
 
 ### Human review is outside the graph
@@ -261,4 +261,4 @@ For a lightweight local run, the API defaults to FastAPI background tasks, SQLit
 
 The code is shaped so production infrastructure can replace local components without changing the user workflow: SQLite can move to PostgreSQL, the SQLite LangGraph saver to a persistent PostgreSQL checkpointer, FTS5 to PostgreSQL full-text search, local files to S3-compatible object storage, Redis to a managed service, and the single worker to multiple workers. Semantic/vector retrieval is not currently implemented and should be added only if evaluation shows it improves evidence retrieval.
 
-Official Slack and Jira adapters exist, but the default and safest demonstration configuration is mock mode. OpenRouter provider classes also exist, but connecting model-backed analysis would require explicitly wiring them into the graph with bounded, redacted evidence and retaining the same structured outputs and human approval boundary.
+Official Slack and Jira adapters exist, but the default and safest demonstration configuration is mock mode. OpenRouter powers only recommendation and cookbook generation with bounded, redacted context. Its output remains advisory, and the existing structured-output validation and human approval boundary still govern every external action.

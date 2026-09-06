@@ -17,6 +17,9 @@ def test_human_approved_incident_flow(tmp_path: Path, monkeypatch):
     importlib.reload(database)
     import app.orchestrator as orchestrator
     importlib.reload(orchestrator)
+    # Keep this end-to-end workflow test hermetic; dedicated AI-node tests inject
+    # a structured provider and cover the OpenRouter-backed paths.
+    monkeypatch.setattr(orchestrator.settings, "openrouter_api_key", None)
     import app.main as main
     importlib.reload(main)
     assert not orchestrator.integration_available("slack")
