@@ -8,6 +8,7 @@ from uuid import uuid4
 import httpx
 
 from .config import settings
+from .ai_config import OpenRouterConfig, openrouter_config
 
 
 class LLMProvider(ABC):
@@ -20,26 +21,27 @@ class LLMProvider(ABC):
 
 
 class OpenRouterProvider(LLMProvider):
-    def __init__(self) -> None:
-        if not settings.openrouter_base_url_chat_completion:
-            raise RuntimeError("DIAS_OPENROUTER_BASE_URL_CHAT_COMPLETION is not configured")
-        self.endpoint = settings.openrouter_base_url_chat_completion
+    def __init__(self, config: OpenRouterConfig) -> None:
+        if not config.configured:
+            raise RuntimeError("OpenRouter is not fully configured")
+        self.endpoint = config.endpoint
+        self.api_key = config.api_key
 
     async def structured_generate(self, *, model: str, messages: list[dict], schema: dict) -> dict:
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}, json={"model": model, "messages": messages, "response_format": {"type": "json_schema", "json_schema": {"name": "incident_output", "strict": True, "schema": schema}}, "provider": {"require_parameters": True}})
+            response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {self.api_key}"}, json={"model": model, "messages": messages, "response_format": {"type": "json_schema", "json_schema": {"name": "incident_output", "strict": True, "schema": schema}}, "provider": {"require_parameters": True}})
             response.raise_for_status()
             return json.loads(response.json()["choices"][0]["message"]["content"])
 
     async def chat(self, *, model: str, messages: list[dict]) -> str:
         async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}, json={"model": model, "messages": messages})
+            response = await client.post(self.endpoint, headers={"Authorization": f"Bearer {self.api_key}"}, json={"model": model, "messages": messages})
             response.raise_for_status()
             return response.json()["choices"][0]["message"]["content"]
 
     async def stream_chat(self, *, model: str, messages: list[dict]) -> AsyncIterator[str]:
         async with httpx.AsyncClient(timeout=60) as client:
-            async with client.stream("POST", self.endpoint, headers={"Authorization": f"Bearer {settings.openrouter_api_key}"}, json={"model": model, "messages": messages, "stream": True}) as response:
+            async with client.stream("POST", self.endpoint, headers={"Authorization": f"Bearer {self.api_key}"}, json={"model": model, "messages": messages, "stream": True}) as response:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if not line.startswith("data: "):
@@ -64,9 +66,10 @@ class MockLLMProvider(LLMProvider):
             yield token
 
 
-def llm_provider() -> LLMProvider:
-    if settings.openrouter_api_key and settings.openrouter_reasoning_model:
-        return OpenRouterProvider()
+def llm_provider(workspace_id: str | None = None) -> LLMProvider:
+    config = openrouter_config(workspace_id)
+    if config.configured:
+        return OpenRouterProvider(config)
     return MockLLMProvider()
 
 

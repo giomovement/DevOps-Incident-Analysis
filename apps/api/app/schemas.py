@@ -37,6 +37,12 @@ class ChatRequest(BaseModel):
     content: str = Field(min_length=2, max_length=4000)
 
 
+class OpenRouterSettingsUpdate(BaseModel):
+    api_key: str | None = Field(default=None, max_length=512)
+    model: str = Field(min_length=1, max_length=200)
+    clear_api_key: bool = False
+
+
 class IncidentState(TypedDict, total=False):
     schema_version: str
     workspace_id: str

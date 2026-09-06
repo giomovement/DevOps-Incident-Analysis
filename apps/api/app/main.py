@@ -7,16 +7,18 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
+import httpx
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
 from .auth import authenticate, create_user, current_user, digest, issue_session, public_user, require_mutation, require_responder
+from .ai_config import openrouter_config
 from .config import settings
 from .database import db, init_db, row_dict, utcnow
 from .orchestrator import run_analysis
 from .providers import delivery_adapter, integration_available, llm_provider, slack_channel_label
-from .schemas import ActionDecision, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, SignupRequest
+from .schemas import ActionDecision, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, OpenRouterSettingsUpdate, SignupRequest
 
 ALLOWED_EXTENSIONS = {".log", ".txt", ".json", ".jsonl", ".csv"}
 ALLOWED_MIME = {"text/plain", "application/json", "application/x-ndjson", "text/csv", "application/csv", "application/octet-stream"}
@@ -260,10 +262,7 @@ def get_evidence(evidence_id:str,user=Depends(current_user)):
 
 @app.post("/api/v1/incidents/{incident_id}/chat", status_code=201)
 async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(require_mutation)):
-    if not settings.openrouter_api_key:
-        raise HTTPException(503, "DIAS_OPENROUTER_API_KEY is not configured")
-    if not settings.openrouter_reasoning_model:
-        raise HTTPException(503, "DIAS_OPENROUTER_REASONING_MODEL is not configured")
+    ai_config = openrouter_config(user["workspace_id"])
 
     with db() as conn:
         incident = owned_incident(conn, incident_id, user)
@@ -334,8 +333,22 @@ async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(requir
     citations = [{"id": item["id"], "source": item["source_label"]} for item in evidence]
     async def stream_chat_response():
         answer_parts: list[str] = []
+        if not ai_config.configured:
+            if evidence:
+                observations = " ".join(item["excerpt"][:240].strip() for item in evidence[:3])
+                answer = (
+                    "Deterministic analysis mode is active. Based on the retrieved incident evidence: "
+                    f"{observations} Review the cited source lines and validate any remediation before execution."
+                )
+            else:
+                answer = "Deterministic analysis mode is active. No relevant evidence was found for this question."
+            with db() as conn:
+                conn.execute("INSERT INTO messages(id,conversation_id,role,content,citations,created_at) VALUES(?,?,'assistant',?,?,?)", (str(uuid4()), conv_id, answer, json.dumps(citations), utcnow()))
+            yield f"event: token\ndata: {json.dumps({'content': answer})}\n\n"
+            yield f"event: complete\ndata: {json.dumps({'conversation_id': conv_id, 'citations': citations, 'source': 'deterministic'})}\n\n"
+            return
         try:
-            async for chunk in llm_provider().stream_chat(model=settings.openrouter_reasoning_model, messages=messages):
+            async for chunk in llm_provider(user["workspace_id"]).stream_chat(model=ai_config.model, messages=messages):
                 answer_parts.append(chunk)
                 yield f"event: token\ndata: {json.dumps({'content': chunk})}\n\n"
         except Exception as exc:
@@ -408,8 +421,69 @@ def integrations(verify:bool=False,user=Depends(current_user)):
         {"provider":"slack", "status":"connected" if verify and slack_ready else "configured" if slack_official else "sandbox", "mode":"official" if slack_official else "mock", "available":slack_ready, "display_name":"Slack workspace" if slack_official else "Slack sandbox", "destination":slack_destination},
         {"provider":"jira", "status":"connected" if verify and jira_ready else "configured" if jira_official else "sandbox", "mode":"official" if jira_official else "mock", "available":jira_ready, "display_name":"Jira Cloud" if jira_official else "Jira sandbox"},
     ]
+
+
+def require_admin(user=Depends(require_mutation)):
+    if user["role"] != "admin":
+        raise HTTPException(403, "Administrator role required")
+    return user
+
+
+@app.get("/api/v1/integrations/openrouter")
+def get_openrouter_settings(user=Depends(current_user)):
+    config = openrouter_config(user["workspace_id"])
+    return {
+        "provider": "openrouter",
+        "status": "configured" if config.configured else "deterministic",
+        "configured": config.configured,
+        "model": config.model or "",
+        "key_hint": f"••••{config.api_key[-4:]}" if config.api_key else None,
+    }
+
+
+@app.put("/api/v1/integrations/openrouter")
+def update_openrouter_settings(body: OpenRouterSettingsUpdate, user=Depends(require_admin)):
+    current = openrouter_config(user["workspace_id"])
+    api_key = None if body.clear_api_key else ((body.api_key or "").strip() or current.api_key)
+    model = body.model.strip()
+    metadata = json.dumps({"model": model})
+    status = "configured" if api_key and model else "deterministic"
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO integrations(id,workspace_id,provider,status,display_name,secret_ref,metadata,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(workspace_id,provider) DO UPDATE SET status=excluded.status,display_name=excluded.display_name,secret_ref=excluded.secret_ref,metadata=excluded.metadata,updated_at=excluded.updated_at",
+            (str(uuid4()), user["workspace_id"], "openrouter", status, "OpenRouter", api_key, metadata, utcnow()),
+        )
+    audit(user["workspace_id"], user["id"], "integration.configured", target_type="integration", target_id="openrouter", details={"mode": status, "model": model})
+    return {"provider": "openrouter", "status": status, "configured": status == "configured", "model": model, "key_hint": f"••••{api_key[-4:]}" if api_key else None}
+
+
+def test_openrouter(workspace_id: str) -> dict:
+    config = openrouter_config(workspace_id)
+    if not config.api_key:
+        raise HTTPException(409, "Add and save an OpenRouter API key before testing")
+    if not config.model:
+        raise HTTPException(409, "Add and save an OpenRouter model before testing")
+    models_endpoint = config.endpoint.rsplit("/chat/completions", 1)[0] + "/models"
+    try:
+        response = httpx.get(models_endpoint, headers={"Authorization": f"Bearer {config.api_key}"}, timeout=20)
+        response.raise_for_status()
+        models = response.json().get("data", [])
+        if models and not any(item.get("id") == config.model for item in models):
+            raise HTTPException(422, f"Connected, but model '{config.model}' was not found")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, f"OpenRouter connection test failed: {type(exc).__name__}") from exc
+    return {"provider": "openrouter", "status": "connected", "model": config.model}
+
+
 @app.post("/api/v1/integrations/{provider}/test")
 def test_integration(provider:str,user=Depends(require_responder)):
+    if provider == "openrouter":
+        result = test_openrouter(user["workspace_id"])
+        audit(user["workspace_id"],user["id"],"integration.tested",target_type="integration",target_id=provider)
+        return result
     if provider not in ("slack","jira"): raise HTTPException(404,"Unknown integration")
     try:
         result=delivery_adapter(provider).test()
