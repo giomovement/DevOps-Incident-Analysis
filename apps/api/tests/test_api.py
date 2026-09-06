@@ -26,8 +26,8 @@ def test_human_approved_incident_flow(tmp_path: Path, monkeypatch):
     importlib.reload(main)
     assert not orchestrator.integration_available("slack")
     assert not orchestrator.integration_available("jira")
-    monkeypatch.setattr(orchestrator, "integration_available", lambda provider: provider == "slack")
-    monkeypatch.setattr(main, "integration_available", lambda provider, verify=True: provider == "slack")
+    monkeypatch.setattr(orchestrator, "integration_available", lambda provider, **kwargs: provider == "slack")
+    monkeypatch.setattr(main, "integration_available", lambda provider, verify=True, **kwargs: provider == "slack")
     with TestClient(main.app) as client:
         response = client.post("/api/v1/auth/signup", json={"email":"admin@example.com","password":"correct-horse-battery","display_name":"Admin"})
         assert response.status_code == 201

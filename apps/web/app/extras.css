@@ -1,15 +1,18 @@
 .citation-button { display:inline-flex; gap:5px; align-items:center; margin:10px 8px 0 0; padding:0; border:0; background:transparent; color:var(--cyan); font:8px var(--font-geist-mono),monospace; cursor:pointer; }
 .citation-button svg { width:11px; }
+:root { --amber: #b76800; }
+.dark { --amber: #ffb020; }
 
 .openrouter-card { margin-bottom: 16px; padding: 24px; border: 1px solid var(--line); border-radius: 18px; background: var(--surface); }
 .openrouter-card > header { display: flex; align-items: center; gap: 12px; }
-.openrouter-card > header > svg { color: var(--cyan); }
+.openrouter-card > header > svg { color: var(--green); }
 .openrouter-card header > span { display: grid; }
 .openrouter-card header b { font-size: 14px; }
 .openrouter-card header small { color: var(--muted); font-size: 9px; }
 .provider-status { margin-left: auto; display: flex; align-items: center; gap: 6px; color: var(--cyan); font: 8px var(--font-geist-mono), monospace; text-transform: uppercase; }
 .provider-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; box-shadow: 0 0 8px currentColor; }
 .provider-status.connected { color: var(--green); }
+.provider-status.configured { color: var(--amber); }
 .provider-status.failed { color: var(--danger); }
 .provider-status.deterministic { color: var(--muted); }
 .openrouter-copy { margin: 22px 0 18px; padding-top: 18px; border-top: 1px solid var(--line); }
@@ -24,10 +27,31 @@
 .openrouter-card > footer { min-height: 0; margin-top: 18px; display: flex; justify-content: space-between; align-items: center; border: 0; }
 .openrouter-card footer > div { display: flex; gap: 9px; }
 .openrouter-card button { height: 38px; display: flex; align-items: center; gap: 7px; padding: 0 13px; border: 1px solid var(--line); border-radius: 9px; background: transparent; color: var(--text); font-size: 9px; cursor: pointer; }
-.openrouter-card button:first-child { border-color: color-mix(in srgb, var(--cyan) 40%, var(--line)); color: var(--cyan); }
+.openrouter-card button:first-child { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); color: var(--amber); }
 .openrouter-card button:disabled { opacity: .45; cursor: not-allowed; }
 .openrouter-card button svg { width: 14px; }
 .openrouter-card .text-button { border: 0; color: var(--muted); }
 .integration-message { margin: 0 0 15px; }
 .integration-message.failed { border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); color: var(--danger); }
 @media(max-width:600px) { .openrouter-fields { grid-template-columns: 1fr; } .openrouter-card > footer { align-items: flex-start; gap: 12px; flex-direction: column; } .openrouter-card footer > div { width: 100%; } .openrouter-card footer > div button { flex: 1; justify-content: center; } }
+
+.integration-grid > article { display: flex; flex-direction: column; }
+.integration-grid header .provider-status { margin-left: auto; color: var(--cyan); }
+.integration-grid header .provider-status.configured { color: var(--amber); }
+.integration-grid header .provider-status.connected { color: var(--green); }
+.integration-grid header .provider-status.not-configured { color: var(--muted); }
+.integration-grid header .provider-status i { background: currentColor; box-shadow: 0 0 8px currentColor; }
+.integration-grid article > .integration-fields { display: grid; grid-template-columns: 1fr; gap: 12px; padding: 16px 0; border-bottom: 0; }
+.integration-fields label { display: grid; gap: 7px; }
+.integration-fields label > span { display: flex; align-items: center; gap: 7px; color: var(--muted); font: 8px var(--font-geist-mono), monospace; }
+.integration-fields label svg { width: 13px; }
+.integration-fields input { height: 40px; padding: 0 12px; border: 1px solid var(--line); border-radius: 9px; outline: 0; background: color-mix(in srgb, var(--surface) 82%, black); color: var(--text); font: 10px var(--font-geist-mono), monospace; }
+.integration-fields input:focus { border-color: var(--amber); }
+.integration-fields input:disabled { opacity: .45; cursor: not-allowed; background: color-mix(in srgb, var(--surface) 92%, var(--muted)); }
+.integration-grid .integration-fields button { width: max-content; height: 36px; display: flex; align-items: center; gap: 7px; padding: 0 12px; border: 1px solid color-mix(in srgb, var(--amber) 55%, var(--line)); border-radius: 9px; background: transparent; color: var(--amber); font-size: 9px; cursor: pointer; }
+.integration-grid .integration-fields button:disabled { opacity: .45; cursor: not-allowed; }
+.integration-grid .integration-fields button svg { width: 14px; }
+.integration-grid article > footer { margin-top: auto; padding-top: 16px; justify-content: flex-start; }
+.integration-grid article > footer > div { display: flex; gap: 9px; }
+.integration-grid footer .save-button { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); color: var(--amber); }
+.integration-grid footer button:disabled { opacity: .45; cursor: not-allowed; }

@@ -15,6 +15,8 @@ def _load_modules(tmp_path: Path, monkeypatch):
     importlib.reload(config)
     import app.database as database
     importlib.reload(database)
+    import app.ai_config as ai_config
+    importlib.reload(ai_config)
     import app.providers as providers
     importlib.reload(providers)
     import app.orchestrator as orchestrator

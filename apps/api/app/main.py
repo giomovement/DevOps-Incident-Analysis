@@ -7,7 +7,6 @@ import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-import httpx
 from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
@@ -15,10 +14,12 @@ from fastapi.responses import PlainTextResponse, StreamingResponse
 from .auth import authenticate, create_user, current_user, digest, issue_session, public_user, require_mutation, require_responder
 from .ai_config import openrouter_config
 from .config import settings
+from .connection_tests import IntegrationConnectionError, IntegrationNotConfiguredError, IntegrationValidationError, UnknownIntegrationError, test_provider_connection
 from .database import db, init_db, row_dict, utcnow
+from .integration_config import slack_config
 from .orchestrator import run_analysis
 from .providers import delivery_adapter, integration_available, llm_provider, slack_channel_label
-from .schemas import ActionDecision, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, OpenRouterSettingsUpdate, SignupRequest
+from .schemas import ActionDecision, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, OpenRouterSettingsUpdate, SignupRequest, SlackSettingsUpdate
 
 ALLOWED_EXTENSIONS = {".log", ".txt", ".json", ".jsonl", ".csv"}
 ALLOWED_MIME = {"text/plain", "application/json", "application/x-ndjson", "text/csv", "application/csv", "application/octet-stream"}
@@ -374,7 +375,7 @@ def decide_action(action_id:str,body:ActionDecision,decision:str,user:dict):
         action=conn.execute("SELECT a.* FROM action_drafts a JOIN incidents i ON i.id=a.incident_id WHERE a.id=? AND i.workspace_id=?",(action_id,user["workspace_id"])).fetchone()
         if not action: raise HTTPException(404,"Action not found")
         if action["status"]!="pending": raise HTTPException(409,"Action already decided")
-        if not integration_available(action["kind"]): raise HTTPException(409,f"{action['kind'].title()} is not available. Configure and test an official integration before deciding this action")
+        if not integration_available(action["kind"], workspace_id=user["workspace_id"]): raise HTTPException(409,f"{action['kind'].title()} is not available. Configure and test the integration before deciding this action")
         if not secrets.compare_digest(action["payload_hash"],body.payload_hash): raise HTTPException(409,"Draft changed; review the current payload")
         approval_id=str(uuid4());conn.execute("INSERT INTO approvals(id,action_id,payload_hash,decision,approver_id,comment,created_at) VALUES(?,?,?,?,?,?,?)",(approval_id,action_id,body.payload_hash,decision,user["id"],body.comment,utcnow()))
         if decision=="rejected": conn.execute("UPDATE action_drafts SET status='rejected',updated_at=? WHERE id=?",(utcnow(),action_id)); result={"status":"rejected"}
@@ -382,7 +383,7 @@ def decide_action(action_id:str,body:ActionDecision,decision:str,user:dict):
             existing=conn.execute("SELECT * FROM deliveries WHERE action_id=?",(action_id,)).fetchone()
             if existing: result=dict(existing)
             else:
-                adapter=delivery_adapter(action["kind"]); delivered=adapter.deliver(destination=action["destination"],payload=json.loads(action["payload"]),idempotency_key=action["idempotency_key"]); delivery_id=str(uuid4())
+                adapter=delivery_adapter(action["kind"], user["workspace_id"]); delivered=adapter.deliver(destination=action["destination"],payload=json.loads(action["payload"]),idempotency_key=action["idempotency_key"]); delivery_id=str(uuid4())
                 conn.execute("INSERT INTO deliveries(id,action_id,provider,destination,status,attempts,external_id,external_url,delivered_at) VALUES(?,?,?,?, 'delivered',1,?,?,?)",(delivery_id,action_id,action["kind"],action["destination"],delivered["external_id"],delivered.get("external_url"),utcnow()));conn.execute("UPDATE action_drafts SET status='delivered',updated_at=? WHERE id=?",(utcnow(),action_id));result={"id":delivery_id,"status":"delivered",**delivered}
         pending=conn.execute("SELECT 1 FROM action_drafts WHERE run_id=? AND status='pending' LIMIT 1",(action["run_id"],)).fetchone()
         if not pending:
@@ -411,15 +412,15 @@ def export_cookbook(incident_id:str,user=Depends(current_user)):
 
 @app.get("/api/v1/integrations")
 def integrations(verify:bool=False,user=Depends(current_user)):
-    slack_official = settings.integrations_mode == "official" and bool(settings.slack_bot_token)
+    slack = slack_config(user["workspace_id"])
+    slack_official = slack.configured
     jira_official = settings.integrations_mode == "official" and bool(settings.jira_access_token and settings.jira_cloud_id)
-    slack_ready = integration_available("slack",verify=verify)
-    jira_ready = integration_available("jira",verify=verify)
-    configured_label = settings.slack_default_channel_name.lstrip("#") if settings.slack_default_channel_name else None
-    slack_destination = configured_label or (slack_channel_label(settings.slack_default_channel) if verify and slack_ready else settings.slack_default_channel)
+    slack_ready = integration_available("slack",verify=verify,workspace_id=user["workspace_id"])
+    jira_ready = integration_available("jira",verify=verify,workspace_id=user["workspace_id"])
+    slack_destination = slack_channel_label(slack.channel_id, slack.bot_token) if verify and slack_ready else slack.channel_id
     return [
-        {"provider":"slack", "status":"connected" if verify and slack_ready else "configured" if slack_official else "sandbox", "mode":"official" if slack_official else "mock", "available":slack_ready, "display_name":"Slack workspace" if slack_official else "Slack sandbox", "destination":slack_destination},
-        {"provider":"jira", "status":"connected" if verify and jira_ready else "configured" if jira_official else "sandbox", "mode":"official" if jira_official else "mock", "available":jira_ready, "display_name":"Jira Cloud" if jira_official else "Jira sandbox"},
+        {"provider":"slack", "status":"connected" if verify and slack_ready else "configured" if slack_official else "not configured", "mode":"configured" if slack_official else "not configured", "available":slack_ready, "display_name":"Slack workspace", "destination":slack_destination},
+        {"provider":"jira", "status":"connected" if verify and jira_ready else "configured" if jira_official else "not configured", "mode":"configured" if jira_official else "not configured", "available":jira_ready, "display_name":"Jira Cloud"},
     ]
 
 
@@ -458,37 +459,40 @@ def update_openrouter_settings(body: OpenRouterSettingsUpdate, user=Depends(requ
     return {"provider": "openrouter", "status": status, "configured": status == "configured", "model": model, "key_hint": f"••••{api_key[-4:]}" if api_key else None}
 
 
-def test_openrouter(workspace_id: str) -> dict:
-    config = openrouter_config(workspace_id)
-    if not config.api_key:
-        raise HTTPException(409, "Add and save an OpenRouter API key before testing")
-    if not config.model:
-        raise HTTPException(409, "Add and save an OpenRouter model before testing")
-    models_endpoint = config.endpoint.rsplit("/chat/completions", 1)[0] + "/models"
-    try:
-        response = httpx.get(models_endpoint, headers={"Authorization": f"Bearer {config.api_key}"}, timeout=20)
-        response.raise_for_status()
-        models = response.json().get("data", [])
-        if models and not any(item.get("id") == config.model for item in models):
-            raise HTTPException(422, f"Connected, but model '{config.model}' was not found")
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(503, f"OpenRouter connection test failed: {type(exc).__name__}") from exc
-    return {"provider": "openrouter", "status": "connected", "model": config.model}
+@app.get("/api/v1/integrations/slack")
+def get_slack_settings(user=Depends(current_user)):
+    config = slack_config(user["workspace_id"])
+    return {"provider": "slack", "status": "configured" if config.configured else "not configured", "configured": config.configured, "channel_id": config.channel_id, "token_hint": f"••••{config.bot_token[-4:]}" if config.bot_token else None}
+
+
+@app.put("/api/v1/integrations/slack")
+def update_slack_settings(body: SlackSettingsUpdate, user=Depends(require_admin)):
+    current = slack_config(user["workspace_id"])
+    bot_token = None if body.clear_bot_token else ((body.bot_token or "").strip() or current.bot_token)
+    channel_id = body.channel_id.strip()
+    status = "configured" if bot_token and channel_id else "not configured"
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO integrations(id,workspace_id,provider,status,display_name,secret_ref,metadata,updated_at) VALUES(?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(workspace_id,provider) DO UPDATE SET status=excluded.status,display_name=excluded.display_name,secret_ref=excluded.secret_ref,metadata=excluded.metadata,updated_at=excluded.updated_at",
+            (str(uuid4()), user["workspace_id"], "slack", status, "Slack workspace", bot_token, json.dumps({"channel_id": channel_id}), utcnow()),
+        )
+    audit(user["workspace_id"], user["id"], "integration.configured", target_type="integration", target_id="slack", details={"status": status, "channel_id": channel_id})
+    return {"provider": "slack", "status": status, "configured": status == "configured", "channel_id": channel_id, "token_hint": f"••••{bot_token[-4:]}" if bot_token else None}
 
 
 @app.post("/api/v1/integrations/{provider}/test")
 def test_integration(provider:str,user=Depends(require_responder)):
-    if provider == "openrouter":
-        result = test_openrouter(user["workspace_id"])
-        audit(user["workspace_id"],user["id"],"integration.tested",target_type="integration",target_id=provider)
-        return result
-    if provider not in ("slack","jira"): raise HTTPException(404,"Unknown integration")
     try:
-        result=delivery_adapter(provider).test()
-    except Exception as exc:
-        raise HTTPException(503, f"{provider.title()} connection test failed: {str(exc)[:180]}") from exc
+        result = test_provider_connection(provider, user["workspace_id"])
+    except UnknownIntegrationError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except IntegrationNotConfiguredError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except IntegrationValidationError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except IntegrationConnectionError as exc:
+        raise HTTPException(503, str(exc)) from exc
     audit(user["workspace_id"],user["id"],"integration.tested",target_type="integration",target_id=provider);return result
 
 

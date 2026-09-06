@@ -1,27 +1,36 @@
 'use client';
 
-import { Bot, CheckCircle2, CircleAlert, ExternalLink, KeyRound, LoaderCircle, LockKeyhole, MessageSquareText, PlugZap, Save, ShieldCheck, TicketCheck } from 'lucide-react';
+import { Bot, CheckCircle2, CircleAlert, Cloud, Hash, KeyRound, LoaderCircle, MessageSquareText, PlugZap, Save, ShieldCheck, TicketCheck } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { AppShell } from '@/components/app-shell';
 import { api } from '@/lib/api';
 
 type Integration = { provider: string; status: string; mode: string; display_name: string; destination?: string };
 type OpenRouterSettings = { provider: string; status: string; configured: boolean; model: string; key_hint?: string };
+type SlackSettings = { provider: string; status: string; configured: boolean; channel_id: string; token_hint?: string };
 type ConnectionState = 'idle' | 'testing' | 'connected' | 'failed';
 
 export default function Integrations() {
   const [items, setItems] = useState<Integration[]>([]);
   const [openrouter, setOpenrouter] = useState<OpenRouterSettings | null>(null);
+  const [slack, setSlack] = useState<SlackSettings | null>(null);
   const [apiKey, setApiKey] = useState('');
   const [model, setModel] = useState('');
+  const [slackToken, setSlackToken] = useState('');
+  const [channelId, setChannelId] = useState('');
+  const [jiraToken, setJiraToken] = useState('');
+  const [jiraCloudId, setJiraCloudId] = useState('');
   const [testing, setTesting] = useState('');
   const [saving, setSaving] = useState(false);
+  const [savingSlack, setSavingSlack] = useState(false);
   const [connection, setConnection] = useState<ConnectionState>('idle');
+  const [providerStatuses, setProviderStatuses] = useState<Record<string, ConnectionState>>({});
+  const [messageFailed, setMessageFailed] = useState(false);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    Promise.all([api<Integration[]>('/integrations'), api<OpenRouterSettings>('/integrations/openrouter')])
-      .then(([integrations, settings]) => { setItems(integrations); setOpenrouter(settings); setModel(settings.model); })
+    Promise.all([api<Integration[]>('/integrations'), api<OpenRouterSettings>('/integrations/openrouter'), api<SlackSettings>('/integrations/slack')])
+      .then(([integrations, settings, slackSettings]) => { setItems(integrations); setOpenrouter(settings); setModel(settings.model); setSlack(slackSettings); setChannelId(slackSettings.channel_id); })
       .catch(() => (location.href = '/login'));
   }, []);
 
@@ -38,24 +47,44 @@ export default function Integrations() {
     } finally { setSaving(false); }
   }
 
+  async function saveSlack() {
+    setSavingSlack(true); setMessage('');
+    try {
+      const result = await api<SlackSettings>('/integrations/slack', {
+        method: 'PUT', body: JSON.stringify({ bot_token: slackToken || null, channel_id: channelId }),
+      });
+      setSlack(result); setSlackToken('');
+      setProviderStatuses((current) => { const next = { ...current }; delete next.slack; return next; });
+      setItems((current) => current.map((item) => item.provider === 'slack' ? { ...item, status: result.status, mode: result.status, destination: result.channel_id } : item));
+      setMessage(result.configured ? 'Slack settings saved. Test the connection to verify them.' : 'Slack is not configured. The rest of the app remains available.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not save Slack settings');
+    } finally { setSavingSlack(false); }
+  }
+
   async function test(provider: string) {
-    setTesting(provider); setMessage('');
+    setTesting(provider); setMessage(''); setMessageFailed(false);
+    setProviderStatuses((current) => ({ ...current, [provider]: 'testing' }));
     if (provider === 'openrouter') setConnection('testing');
     try {
-      const result = await api<{ status: string; model?: string }>(`/integrations/${provider}/test`, { method: 'POST' });
+      const result = await api<{ status: string; model?: string; workspace?: string; channel?: string }>(`/integrations/${provider}/test`, { method: 'POST' });
+      setProviderStatuses((current) => ({ ...current, [provider]: 'connected' }));
       if (provider === 'openrouter') setConnection('connected');
-      setMessage(`${provider === 'openrouter' ? 'OpenRouter' : provider} ${result.status}${result.model ? ` with ${result.model}` : ''} — no external write was performed.`);
+      if (provider !== 'openrouter') setItems((current) => current.map((item) => item.provider === provider ? { ...item, status: result.status } : item));
+      const target = result.model ? ` with ${result.model}` : result.channel ? ` to #${result.channel}` : '';
+      setMessage(`${provider === 'openrouter' ? 'OpenRouter' : 'Slack'} ${result.status}${target} — no external write was performed.`);
     } catch (error) {
+      setProviderStatuses((current) => ({ ...current, [provider]: 'failed' }));
+      setMessageFailed(true);
       if (provider === 'openrouter') setConnection('failed');
       setMessage(error instanceof Error ? error.message : 'Test failed');
     } finally { setTesting(''); }
   }
 
-  const official = items.some((item) => item.provider === 'slack' && item.mode === 'official');
-  const status = connection === 'connected' ? 'connected' : connection === 'failed' ? 'failed' : openrouter?.configured ? 'configured' : 'deterministic';
+  const status = connection !== 'idle' ? connection : openrouter?.configured ? 'configured' : 'deterministic';
 
-  return <AppShell title="Integrations" eyebrow="ADMINISTRATIVE CONNECTIONS">
-    <section className="integration-intro"><div><ShieldCheck /><span><h2>Preview first. Approve every write.</h2><p>Credentials remain server-side and are never exposed to agents or log evidence.</p></span></div><em><LockKeyhole />{official ? 'Official Slack mode' : 'Mock sandbox mode'}</em></section>
+  return <AppShell title="Configure Integrations" eyebrow="ADMINISTRATIVE CONNECTIONS">
+    <section className="integration-intro"><div><ShieldCheck /><span><h2>Test connections before running the app.</h2><p>The app still works without integrations. Without OpenRouter, it defaults to deterministic mode with no LLM use.</p></span></div></section>
 
     <section className="openrouter-card">
       <header><Bot /><span><b>OpenRouter</b><small>Optional AI reasoning provider</small></span><em className={`provider-status ${status}`}><i />{status}</em></header>
@@ -67,12 +96,24 @@ export default function Integrations() {
       <footer><div><button onClick={() => saveOpenRouter(false)} disabled={saving || !model.trim()}>{saving ? <LoaderCircle className="spin" /> : <Save />}Save settings</button><button onClick={() => test('openrouter')} disabled={!!testing || !openrouter?.configured}>{testing === 'openrouter' ? <LoaderCircle className="spin" /> : <PlugZap />}Test connection</button></div>{openrouter?.configured && <button className="text-button" onClick={() => saveOpenRouter(true)} disabled={saving}>Remove key &amp; use deterministic mode</button>}</footer>
     </section>
 
-    {message && <div className={`integration-message ${connection === 'failed' ? 'failed' : ''}`}>{connection === 'failed' ? <CircleAlert /> : <CheckCircle2 />}{message}</div>}
+    {message && <div className={`integration-message ${messageFailed ? 'failed' : ''}`}>{messageFailed ? <CircleAlert /> : <CheckCircle2 />}{message}</div>}
 
     <section className="integration-grid">{items.map((item) => <article key={item.provider}>
-      <header>{item.provider === 'slack' ? <MessageSquareText /> : <TicketCheck />}<span><b>{item.provider === 'slack' ? 'Slack' : 'Jira Cloud'}</b><small>{item.display_name}</small></span><em><i />{item.status}</em></header>
-      <div><span>ADAPTER MODE</span><b>{item.mode}</b></div>{item.destination && <div><span>CHANNEL</span><b>{item.destination}</b></div>}<div><span>EXTERNAL WRITES</span><b>Human approval required</b></div><div><span>{item.provider === 'slack' ? 'SCOPE' : 'SCOPES'}</span><b>{item.provider === 'slack' ? 'chat:write' : 'read:jira-work · write:jira-work'}</b></div>
-      <footer><button onClick={() => test(item.provider)} disabled={!!testing}>{testing === item.provider ? <LoaderCircle className="spin" /> : <PlugZap />}Test connection</button><a href="/architecture">Security model <ExternalLink /></a></footer>
+      <header>{item.provider === 'slack' ? <MessageSquareText /> : <TicketCheck />}<span><b>{item.provider === 'slack' ? 'Slack' : 'Jira (on the roadmap)'}</b><small>{item.display_name}</small></span><em className={`provider-status ${(providerStatuses[item.provider] || item.status).replace(' ', '-')}`}><i />{item.provider === 'jira' ? 'Not available for config' : providerStatuses[item.provider] || item.status}</em></header>
+      {item.provider === 'slack' && <div className="integration-fields">
+        <label><span><KeyRound />BOT TOKEN</span><input type="password" value={slackToken} onChange={(event) => setSlackToken(event.target.value)} placeholder={slack?.token_hint || 'xoxb-…'} autoComplete="off" /></label>
+        <label><span><Hash />CHANNEL ID</span><input value={channelId} onChange={(event) => setChannelId(event.target.value)} placeholder="C0123456789" /></label>
+      </div>}
+      {item.provider === 'jira' && <div className="integration-fields">
+        <label><span><KeyRound />ACCESS TOKEN</span><input type="password" value={jiraToken} onChange={(event) => setJiraToken(event.target.value)} placeholder="Enter Jira access token" autoComplete="off" disabled /></label>
+        <label><span><Cloud />CLOUD ID</span><input value={jiraCloudId} onChange={(event) => setJiraCloudId(event.target.value)} placeholder="Enter Jira Cloud ID" disabled /></label>
+      </div>}
+      <footer><div>
+        {item.provider === 'slack'
+          ? <button className="save-button" onClick={saveSlack} disabled={savingSlack || !channelId.trim()}>{savingSlack ? <LoaderCircle className="spin" /> : <Save />}Save settings</button>
+          : <button className="save-button" disabled><Save />Save settings</button>}
+        <button onClick={() => test(item.provider)} disabled={!!testing || item.provider === 'jira' || item.status === 'not configured'}>{testing === item.provider ? <LoaderCircle className="spin" /> : <PlugZap />}Test connection</button>
+      </div></footer>
     </article>)}</section>
   </AppShell>;
 }

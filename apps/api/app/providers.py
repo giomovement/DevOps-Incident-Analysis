@@ -9,6 +9,7 @@ import httpx
 
 from .config import settings
 from .ai_config import OpenRouterConfig, openrouter_config
+from .integration_config import slack_config
 
 
 class LLMProvider(ABC):
@@ -127,7 +128,10 @@ class JiraOfficialAdapter(DeliveryAdapter):
         return {"external_id":data["key"],"external_url":f"{self.base}/browse/{data['key']}"}
 
 
-def delivery_adapter(provider: str) -> DeliveryAdapter:
+def delivery_adapter(provider: str, workspace_id: str | None = None) -> DeliveryAdapter:
+    slack = slack_config(workspace_id)
+    if provider == "slack" and slack.configured and (slack.workspace_override or settings.integrations_mode == "official"):
+        return SlackOfficialAdapter(slack.bot_token)
     if settings.integrations_mode == "official":
         if provider == "slack" and settings.slack_bot_token: return SlackOfficialAdapter(settings.slack_bot_token)
         if provider == "jira" and settings.jira_access_token and settings.jira_cloud_id: return JiraOfficialAdapter(settings.jira_access_token, settings.jira_cloud_id)
@@ -135,28 +139,30 @@ def delivery_adapter(provider: str) -> DeliveryAdapter:
     return MockDeliveryAdapter(provider)
 
 
-def integration_available(provider: str, verify: bool = True) -> bool:
-    configured = settings.integrations_mode == "official" and (
-        bool(settings.slack_bot_token) if provider == "slack"
+def integration_available(provider: str, verify: bool = True, workspace_id: str | None = None) -> bool:
+    slack = slack_config(workspace_id)
+    configured = (
+        slack.configured and (slack.workspace_override or settings.integrations_mode == "official") if provider == "slack"
         else bool(settings.jira_access_token and settings.jira_cloud_id) if provider == "jira"
         else False
-    )
+    ) and (provider == "slack" or settings.integrations_mode == "official")
     if not configured or not verify:
         return configured
     try:
-        delivery_adapter(provider).test()
+        delivery_adapter(provider, workspace_id).test()
         return True
     except Exception:
         return False
 
 
-def slack_channel_label(channel_id: str) -> str:
-    if not settings.slack_bot_token:
+def slack_channel_label(channel_id: str, token: str | None = None) -> str:
+    token = token or settings.slack_bot_token
+    if not token:
         return channel_id
     try:
         response = httpx.get(
             "https://slack.com/api/conversations.info",
-            headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+            headers={"Authorization": f"Bearer {token}"},
             params={"channel": channel_id},
             timeout=20,
         )

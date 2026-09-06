@@ -12,6 +12,7 @@ from langgraph.graph import END, START, StateGraph
 from .config import settings
 from .ai_config import openrouter_config
 from .database import db, utcnow
+from .integration_config import slack_config
 from .parsing import classify, parse_file
 from .providers import integration_available, llm_provider
 from .schemas import IncidentState
@@ -413,8 +414,9 @@ def draft_actions(state: IncidentState) -> dict:
     slack = build_slack_findings_summary_with_ai(state)
     drafts = []
     with db() as conn:
-        if integration_available("slack"):
-            kind, destination, payload = "slack", settings.slack_default_channel, slack
+        workspace_id = state.get("workspace_id")
+        if integration_available("slack", workspace_id=workspace_id):
+            kind, destination, payload = "slack", slack_config(workspace_id).channel_id, slack
             raw = json.dumps(payload, sort_keys=True); payload_hash = hashlib.sha256(raw.encode()).hexdigest(); did = str(uuid4())
             # Slack's client_msg_id requires a UUID.  Keeping it with the immutable
             # draft lets a safe retry use the same provider-level idempotency key.
@@ -422,7 +424,7 @@ def draft_actions(state: IncidentState) -> dict:
             drafts.append({"id": did, "kind": kind, "destination": destination, "payload": payload, "payload_hash": payload_hash})
         jira_drafts = []
         if top["severity"] == "critical":
-            jira_status = "pending" if integration_available("jira") else "unavailable"
+            jira_status = "pending" if integration_available("jira", workspace_id=workspace_id) else "unavailable"
             payload = {"summary": f"[{top['severity'].upper()}] {top['root_cause']}", "description": top["rationale"], "priority": "Highest", "labels": ["dias", incident_id]}
             raw = json.dumps(payload, sort_keys=True); payload_hash = hashlib.sha256(raw.encode()).hexdigest(); did = str(uuid4())
             conn.execute("INSERT INTO action_drafts(id,incident_id,run_id,kind,destination,payload,payload_hash,idempotency_key,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)", (did, incident_id, run_id, "jira", "OPS", raw, payload_hash, str(uuid4()), jira_status, utcnow(), utcnow()))

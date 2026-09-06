@@ -43,6 +43,12 @@ class OpenRouterSettingsUpdate(BaseModel):
     clear_api_key: bool = False
 
 
+class SlackSettingsUpdate(BaseModel):
+    bot_token: str | None = Field(default=None, max_length=512)
+    channel_id: str = Field(min_length=1, max_length=120)
+    clear_bot_token: bool = False
+
+
 class IncidentState(TypedDict, total=False):
     schema_version: str
     workspace_id: str

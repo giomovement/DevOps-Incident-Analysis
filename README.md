@@ -20,7 +20,7 @@ The frontend also runs with `npm run dev` from `apps/web`. The API runs with `uv
 
 ## Connect Slack
 
-Create a Slack app for the target workspace, add the `chat:write` bot scope, install it, and invite the bot to the incident channel. Then update the uncommitted `.env` file:
+Create a Slack app for the target workspace, add the `chat:write` and `channels:read` bot scopes (`groups:read` as well for private channels), install it, and invite the bot to the incident channel. Then update the uncommitted `.env` file:
 
 ```dotenv
 DIAS_INTEGRATIONS_MODE=official
