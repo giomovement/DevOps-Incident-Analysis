@@ -15,6 +15,7 @@ from .auth import authenticate, create_user, current_user, digest, issue_session
 from .ai_config import openrouter_config
 from .config import settings
 from .connection_tests import IntegrationConnectionError, IntegrationNotConfiguredError, IntegrationValidationError, UnknownIntegrationError, test_provider_connection
+from .dashboard_metrics import dashboard_metrics
 from .database import db, init_db, row_dict, utcnow
 from .integration_config import slack_config
 from .orchestrator import run_analysis
@@ -89,6 +90,11 @@ def list_incidents(user=Depends(current_user)):
     with db() as conn:
         rows = conn.execute("SELECT i.*, (SELECT count(*) FROM findings f WHERE f.incident_id=i.id) finding_count, (SELECT count(*) FROM files x WHERE x.incident_id=i.id) file_count FROM incidents i WHERE workspace_id=? ORDER BY created_at DESC", (user["workspace_id"],)).fetchall()
     return [dict(r) for r in rows]
+
+
+@app.get("/api/v1/dashboard")
+def get_dashboard(user=Depends(current_user)):
+    return dashboard_metrics(user["workspace_id"])
 
 
 @app.get("/api/v1/incidents/{incident_id}")
@@ -375,7 +381,7 @@ def decide_action(action_id:str,body:ActionDecision,decision:str,user:dict):
         action=conn.execute("SELECT a.* FROM action_drafts a JOIN incidents i ON i.id=a.incident_id WHERE a.id=? AND i.workspace_id=?",(action_id,user["workspace_id"])).fetchone()
         if not action: raise HTTPException(404,"Action not found")
         if action["status"]!="pending": raise HTTPException(409,"Action already decided")
-        if not integration_available(action["kind"], workspace_id=user["workspace_id"]): raise HTTPException(409,f"{action['kind'].title()} is not available. Configure and test the integration before deciding this action")
+        if decision == "approved" and not integration_available(action["kind"], workspace_id=user["workspace_id"]): raise HTTPException(409,f"{action['kind'].title()} is not available. Configure and test the integration before approving this action")
         if not secrets.compare_digest(action["payload_hash"],body.payload_hash): raise HTTPException(409,"Draft changed; review the current payload")
         approval_id=str(uuid4());conn.execute("INSERT INTO approvals(id,action_id,payload_hash,decision,approver_id,comment,created_at) VALUES(?,?,?,?,?,?,?)",(approval_id,action_id,body.payload_hash,decision,user["id"],body.comment,utcnow()))
         if decision=="rejected": conn.execute("UPDATE action_drafts SET status='rejected',updated_at=? WHERE id=?",(utcnow(),action_id)); result={"status":"rejected"}

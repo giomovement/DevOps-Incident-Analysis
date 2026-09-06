@@ -55,3 +55,38 @@
 .integration-grid article > footer > div { display: flex; gap: 9px; }
 .integration-grid footer .save-button { border-color: color-mix(in srgb, var(--amber) 55%, var(--line)); color: var(--amber); }
 .integration-grid footer button:disabled { opacity: .45; cursor: not-allowed; }
+
+.overview-strip strong.ratio-value { font-size: 38px; }
+.trend-card .large-chart { gap: 5px; }
+.severity-bars i { min-width: 0; overflow: hidden; }
+.severity-bars b { max-width: 100%; }
+.severity-bars b.critical { background: var(--danger); }
+.severity-bars b.high { background: #ff7a3d; }
+.severity-bars b.medium { background: var(--amber); }
+.severity-bars b.low { background: var(--cyan); }
+.dashboard-half-row { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
+.dashboard-half-row .command-card { min-width: 0; }
+.agent-row em.on { color: var(--green); }
+.recent-card { grid-column: span 3; }
+.incident-row em.resolved { color: var(--cyan); border-color: color-mix(in srgb,var(--cyan) 35%,var(--line)); background: color-mix(in srgb,var(--cyan) 9%,transparent); }
+.incident-row em.active { color: var(--amber); border-color: color-mix(in srgb,var(--amber) 35%,var(--line)); background: color-mix(in srgb,var(--amber) 9%,transparent); }
+.alert-card .alert-incident-row { grid-template-columns: auto 1fr auto auto; }
+.alert-card .alert-incident-row > .severity-dot { width: 7px; height: 7px; padding: 0; border-radius: 50%; background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.side-state-heading { display: flex; align-items: center; gap: 9px; }
+.side-state-heading > svg { flex: 0 0 auto; color: var(--green); }
+.side-state-heading > span { display: grid; }
+.side-state-heading b { font-size: 9px; }
+.side-state-heading small { color: var(--muted); font-size: 8px; }
+.side-footer { width: 90%; align-self: flex-start; }
+.side-footer > .system-state-list { display: grid; margin-top: 9px; }
+.side-footer .agent-row { height: 25px; gap: 6px; }
+.side-footer .agent-row b { min-width: 0; font-size: 8px; white-space: nowrap; }
+.side-footer .agent-row em { font-size: 6px; }
+.side-footer button { margin-top: 10px; }
+.side-nav nav { gap: 4px; }
+.side-nav nav > span { margin: 20px 12px 5px; }
+.side-nav nav a { height: 39px; }
+.workspace-chip div { min-width: 0; }
+.workspace-chip b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media(max-width:1100px) { .recent-card { grid-column: span 2; } }
+@media(max-width:760px) { .dashboard-half-row { grid-template-columns: 1fr; } .recent-card { grid-column: auto; } }

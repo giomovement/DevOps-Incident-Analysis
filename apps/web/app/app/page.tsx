@@ -1,26 +1,43 @@
 'use client';
-import { AlertTriangle, ArrowRight, Bot, CheckCircle2, Clock3, FileText, LoaderCircle, Plus, Radio, TicketCheck, TimerReset, Zap } from 'lucide-react';
+import { AlertTriangle, ArrowRight, Bot, CheckCircle2, FileText, LoaderCircle, Plus, TimerReset, Zap } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { AppShell } from '@/components/app-shell';
+import { SystemStateRows } from '@/components/system-state';
 import { api } from '@/lib/api';
 
 type Incident={id:string;title:string;service?:string;environment?:string;status:string;severity?:string;created_at:string;finding_count:number;file_count:number};
-const demoTrend=[22,31,27,38,34,51,47,63,58,76,69,82,73,61];
+type DashboardMetrics={active_incidents:number;critical_findings:number;mean_time_to_detect_seconds:null;mean_time_to_resolve_seconds:number|null;resolved_sample_size:number;event_volume:{buckets:number[];start:string|null;end:string|null;total:number}};
+
+function duration(seconds:number|null){
+  if(seconds===null)return 'N/A';
+  if(seconds<3600)return `${Math.round(seconds/60)}m`;
+  if(seconds<86400)return `${(seconds/3600).toFixed(1)}h`;
+  return `${(seconds/86400).toFixed(1)}d`;
+}
+
+function timeLabel(value:string|null,fallback:string){
+  return value?new Date(value).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):fallback;
+}
 
 export default function Dashboard(){
-  const [incidents,setIncidents]=useState<Incident[]>([]);const [loading,setLoading]=useState(true);
-  useEffect(()=>{api<Incident[]>('/incidents').then(setIncidents).catch(()=>{location.href='/login'}).finally(()=>setLoading(false))},[]);
-  const active=incidents.filter(i=>!['resolved','monitoring'].includes(i.status));const critical=incidents.filter(i=>i.severity==='critical');
+  const [incidents,setIncidents]=useState<Incident[]>([]);const [metrics,setMetrics]=useState<DashboardMetrics|null>(null);const [loading,setLoading]=useState(true);
+  useEffect(()=>{Promise.all([api<Incident[]>('/incidents'),api<DashboardMetrics>('/dashboard')]).then(([incidentItems,dashboard])=>{setIncidents(incidentItems);setMetrics(dashboard)}).catch(()=>{location.href='/login'}).finally(()=>setLoading(false))},[]);
+  const recentIncidents=useMemo(()=>[...incidents].sort((a,b)=>new Date(b.created_at).getTime()-new Date(a.created_at).getTime()),[incidents]);
+  const critical=recentIncidents.filter(i=>i.severity==='critical'&&i.status!=='resolved');
+  const resolved=incidents.filter(i=>i.status==='resolved').length;
+  const totalFiles=incidents.reduce((total,item)=>total+item.file_count,0);const totalFindings=incidents.reduce((total,item)=>total+item.finding_count,0);
   const severity=useMemo(()=>['critical','high','medium','low'].map(level=>({level,count:incidents.filter(i=>i.severity===level).length})),[incidents]);
+  const maxSeverity=Math.max(...severity.map(item=>item.count),1);const eventBuckets=metrics?.event_volume.buckets??Array(24).fill(0);const maxEvents=Math.max(...eventBuckets,1);
   return <AppShell title="Operational overview" actions={<a className="app-cta" href="/incidents/new"><Plus size={17}/>New analysis</a>}>
-    <section className="overview-strip"><div><span>ACTIVE INCIDENTS</span><strong>{String(active.length).padStart(2,'0')}</strong><small><Radio/> Live workspace</small></div><div><span>CRITICAL FINDINGS</span><strong className="red">{String(critical.length).padStart(2,'0')}</strong><small><AlertTriangle/> Human review required</small></div><div><span>MEAN TIME TO DETECT</span><strong>—</strong><small><Clock3/> Calculated from event evidence</small></div><div><span>MEAN TIME TO RESOLVE</span><strong>—</strong><small><TimerReset/> Available after resolution</small></div></section>
+    <section className="overview-strip"><div><span>RESOLVED INCIDENTS</span><strong className="ratio-value">{resolved} / {incidents.length}</strong><small><CheckCircle2/> {incidents.length?`${Math.round(resolved/incidents.length*100)}% Resolution Rate`:'No Incidents Yet'}</small></div><div><span>EVIDENCE TOTALS</span><strong className="ratio-value">{totalFiles} / {totalFindings}</strong><small><FileText/> Files / Alerts</small></div><div><span>CRITICAL ALERTS</span><strong className="red">{String(metrics?.critical_findings??0).padStart(2,'0')}</strong><small><AlertTriangle/> Human Review Required</small></div><div><span>MEAN TIME TO RESOLVE</span><strong>{duration(metrics?.mean_time_to_resolve_seconds??null)}</strong><small><TimerReset/> {metrics?.resolved_sample_size?`${metrics.resolved_sample_size} Resolved Incident${metrics.resolved_sample_size===1?'':'s'}`:'No Resolved Incidents'}</small></div></section>
     <section className="command-grid">
-      <article className="command-card trend-card"><div className="card-title"><div><span>ERROR-RATE SIGNAL</span><h2>Log volume & anomalies</h2></div><b>DEMO BASELINE</b></div><div className="large-chart">{demoTrend.map((v,i)=><i key={i} style={{height:`${v}%`}} className={i>8?'hot':''}/>)}</div><div className="axis"><span>-60m</span><span>Normalized event volume</span><span>now</span></div></article>
-      <article className="command-card severity-card"><div className="card-title"><div><span>SEVERITY DISTRIBUTION</span><h2>{incidents.length?`${incidents.length} tracked incidents`:'No incidents yet'}</h2></div></div><div className="severity-bars">{severity.map(item=><div key={item.level}><span>{item.level}</span><i><b style={{width:`${Math.max(item.count*22,item.count?12:2)}%`}}/></i><em>{item.count}</em></div>)}</div></article>
-      <article className="command-card alert-card"><div className="card-title"><div><span>CRITICAL ISSUE ALERTS</span><h2>{critical.length?'Response review required':'All clear'}</h2></div><Zap/></div>{critical.length?critical.slice(0,2).map(i=><a href={`/incidents/${i.id}`} key={i.id}><span>SEV-1</span><div><b>{i.title}</b><small>{i.service||'Unknown service'} · {i.environment||'Unknown environment'}</small></div><ArrowRight/></a>):<div className="clear-state"><CheckCircle2/><p>No critical incidents are awaiting review.</p></div>}</article>
-      <article className="command-card agent-card"><div className="card-title"><div><span>AGENT EXECUTION</span><h2>Orchestrator state</h2></div><Bot/></div>{['Log reader & classifier','Remediation','Notification','Cookbook synthesizer','Jira ticket'].map((name,i)=><div className="agent-row" key={name}><span className={i<2?'live':''}/><b>{name}</b><em>{i<2?'READY':'IDLE'}</em></div>)}</article>
-      <article className="command-card recent-card"><div className="card-title"><div><span>RECENT ANALYSIS RUNS</span><h2>Incident history</h2></div><a href="/history">View all <ArrowRight/></a></div>{loading?<div className="loading-row"><LoaderCircle className="spin"/>Loading incidents…</div>:incidents.length?incidents.slice(0,5).map(item=><a className="incident-row" href={`/incidents/${item.id}`} key={item.id}><span className={`severity-dot ${item.severity||'low'}`}/><div><b>{item.title}</b><small>{item.service||'Unassigned'} · {item.file_count} file(s) · {item.finding_count} finding(s)</small></div><em>{item.status.replace('_',' ')}</em><ArrowRight/></a>):<div className="empty-command"><FileText/><h3>No incidents in this workspace</h3><p>Upload operational logs to begin a traceable analysis.</p><a className="app-cta" href="/incidents/new"><Plus/>Create first analysis</a></div>}</article>
-      <article className="command-card integrations-card"><div className="card-title"><div><span>DELIVERY STATUS</span><h2>External actions</h2></div><TicketCheck/></div><div className="integration-state"><span className="integration-logo">S</span><div><b>Slack</b><small>Mock adapter connected</small></div><em>READY</em></div><div className="integration-state"><span className="integration-logo jira">J</span><div><b>Jira Cloud</b><small>Mock adapter connected</small></div><em>READY</em></div><p>Every delivery requires responder approval.</p></article>
+      <article className="command-card trend-card"><div className="card-title"><div><span>LOG EVENT VOLUME</span><h2>Events over the latest 24 hours</h2></div><b>{metrics?.event_volume.total?`${metrics.event_volume.total} EVENTS`:'NO TIMED EVENTS'}</b></div><div className="large-chart">{eventBuckets.map((value,index)=><i key={index} style={{height:value?`${Math.max(value/maxEvents*100,4)}%`:'2px'}} className={value===maxEvents&&value>0?'hot':''}/>)}</div><div className="axis"><span>{timeLabel(metrics?.event_volume.start??null,'-24h')}</span><span>Parsed events per one-hour bucket</span><span>{timeLabel(metrics?.event_volume.end??null,'latest')}</span></div></article>
+      <article className="command-card severity-card"><div className="card-title"><div><span>SEVERITY DISTRIBUTION</span><h2>{incidents.length?`${incidents.length} tracked incidents`:'No incidents yet'}</h2></div></div><div className="severity-bars">{severity.map(item=><div key={item.level}><span>{item.level}</span><i><b className={item.level} style={{width:item.count?`${item.count/maxSeverity*100}%`:'0'}}/></i><em>{item.count}</em></div>)}</div></article>
+      <div className="dashboard-half-row">
+        <article className="command-card alert-card"><div className="card-title"><div><span>CRITICAL ISSUE ALERTS</span><h2>{critical.length?'Human review required':'All clear'}</h2></div><Zap/></div>{critical.length?critical.slice(0,2).map(i=><a className="incident-row alert-incident-row" href={`/incidents/${i.id}`} key={i.id}><span className="severity-dot critical"/><div><b>{i.title}</b><small>{i.service||'Unassigned'} · {i.file_count} file(s) · {i.finding_count} finding(s)</small></div><em className={i.status}>{i.status.replace('_',' ')}</em><ArrowRight/></a>):<div className="clear-state"><CheckCircle2/><p>No active critical incidents are awaiting review.</p></div>}</article>
+        <article className="command-card agent-card"><div className="card-title"><div><span>SYSTEM STATE</span><h2>Runtime &amp; integrations</h2></div><Bot/></div><SystemStateRows/></article>
+      </div>
+      <article className="command-card recent-card"><div className="card-title"><div><span>RECENT ANALYSIS RUNS</span><h2>Incident history</h2></div><a href="/history">View all <ArrowRight/></a></div>{loading?<div className="loading-row"><LoaderCircle className="spin"/>Loading incidents…</div>:recentIncidents.length?recentIncidents.slice(0,5).map(item=><a className="incident-row" href={`/incidents/${item.id}`} key={item.id}><span className={`severity-dot ${item.severity||'low'}`}/><div><b>{item.title}</b><small>{item.service||'Unassigned'} · {item.file_count} file(s) · {item.finding_count} finding(s)</small></div><em className={item.status}>{item.status.replace('_',' ')}</em><ArrowRight/></a>):<div className="empty-command"><FileText/><h3>No incidents in this workspace</h3><p>Upload operational logs to begin a traceable analysis.</p><a className="app-cta" href="/incidents/new"><Plus/>Create first analysis</a></div>}</article>
     </section>
   </AppShell>
 }

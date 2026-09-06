@@ -144,3 +144,36 @@ def test_slack_settings_are_workspace_scoped_masked_and_testable(tmp_path, monke
         rejected = client.post("/api/v1/integrations/slack/test", headers=headers)
         assert rejected.status_code == 422
         assert rejected.json()["detail"] == "Slack channel was not found or is not accessible to this bot"
+
+
+def test_pending_action_can_be_rejected_after_its_integration_becomes_unavailable(tmp_path, monkeypatch):
+    main, client = _client(tmp_path, monkeypatch)
+    with client:
+        signup = client.post("/api/v1/auth/signup", json={"email": "reject-admin@example.com", "password": "correct-horse-battery", "display_name": "Admin"})
+        headers = {"x-csrf-token": signup.json()["csrf_token"]}
+        incident = client.post("/api/v1/incidents", headers=headers, json={"title": "Pending delivery"}).json()
+
+        import hashlib
+        import json
+        from uuid import uuid4
+        from app.database import db, utcnow
+
+        payload = {"text": "Review this incident update"}
+        raw_payload = json.dumps(payload, sort_keys=True)
+        payload_hash = hashlib.sha256(raw_payload.encode()).hexdigest()
+        action_id = str(uuid4())
+        run_id = str(uuid4())
+        now = utcnow()
+        with db() as conn:
+            conn.execute("INSERT INTO runs(id,incident_id,thread_id,status,current_phase,created_at) VALUES(?,?,?,'awaiting_approval','review',?)", (run_id, incident["id"], str(uuid4()), now))
+            conn.execute(
+                "INSERT INTO action_drafts(id,incident_id,run_id,kind,destination,payload,payload_hash,idempotency_key,status,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                (action_id, incident["id"], run_id, "slack", "C0123456789", raw_payload, payload_hash, str(uuid4()), "pending", now, now),
+            )
+
+        monkeypatch.setattr(main, "integration_available", lambda *args, **kwargs: False)
+        rejected = client.post(f"/api/v1/actions/{action_id}/reject", headers=headers, json={"payload_hash": payload_hash})
+
+        assert rejected.status_code == 200
+        assert rejected.json()["status"] == "rejected"
+        assert client.get(f"/api/v1/incidents/{incident['id']}").json()["actions"][0]["status"] == "rejected"
