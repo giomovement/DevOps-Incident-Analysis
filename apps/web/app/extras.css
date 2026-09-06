@@ -67,11 +67,24 @@
 .dashboard-half-row { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 16px; }
 .dashboard-half-row .command-card { min-width: 0; }
 .agent-row em.on { color: var(--green); }
+.agent-row.configured em { color:var(--amber); }
+.agent-row.configured > span { background:var(--amber); box-shadow:0 0 8px var(--amber); }
+.agent-row.failed em { color:var(--danger); }
+.agent-row.failed > span { background:var(--danger); box-shadow:0 0 8px var(--danger); }
 .recent-card { grid-column: span 3; }
 .incident-row em.resolved { color: var(--cyan); border-color: color-mix(in srgb,var(--cyan) 35%,var(--line)); background: color-mix(in srgb,var(--cyan) 9%,transparent); }
 .incident-row em.active { color: var(--amber); border-color: color-mix(in srgb,var(--amber) 35%,var(--line)); background: color-mix(in srgb,var(--amber) 9%,transparent); }
 .alert-card .alert-incident-row { grid-template-columns: auto 1fr auto auto; }
 .alert-card .alert-incident-row > .severity-dot { width: 7px; height: 7px; padding: 0; border-radius: 50%; background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.alert-card-tools { display:flex; align-items:center; gap:12px; color:var(--green); }
+.alert-card-tools > svg { width:20px; }
+.alert-scroll-controls { display:grid; grid-template-columns:28px auto 28px; align-items:center; gap:4px; }
+.alert-scroll-controls button { width:28px; height:28px; display:grid; place-items:center; padding:0; border:1px solid var(--line); border-radius:8px; background:transparent; color:var(--green); cursor:pointer; }
+.alert-scroll-controls button:hover:not(:disabled) { border-color:var(--green); background:color-mix(in srgb,var(--green) 8%,transparent); }
+.alert-scroll-controls button:focus-visible { outline:2px solid var(--cyan); outline-offset:2px; }
+.alert-scroll-controls button:disabled { opacity:.3; cursor:not-allowed; }
+.alert-scroll-controls button svg { width:14px; }
+.alert-scroll-controls span { color:var(--muted); font:8px var(--font-geist-mono),monospace; }
 .side-state-heading { display: flex; align-items: center; gap: 9px; }
 .side-state-heading > svg { flex: 0 0 auto; color: var(--green); }
 .side-state-heading > span { display: grid; }

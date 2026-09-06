@@ -424,8 +424,11 @@ def integrations(verify:bool=False,user=Depends(current_user)):
     slack_ready = integration_available("slack",verify=verify,workspace_id=user["workspace_id"])
     jira_ready = integration_available("jira",verify=verify,workspace_id=user["workspace_id"])
     slack_destination = slack_channel_label(slack.channel_id, slack.bot_token) if verify and slack_ready else slack.channel_id
+    with db() as conn:
+        saved_statuses = {row["provider"]: row["status"] for row in conn.execute("SELECT provider,status FROM integrations WHERE workspace_id=?", (user["workspace_id"],)).fetchall()}
+    slack_status = "connected" if verify and slack_ready else saved_statuses.get("slack", "configured" if slack_official else "not configured")
     return [
-        {"provider":"slack", "status":"connected" if verify and slack_ready else "configured" if slack_official else "not configured", "mode":"configured" if slack_official else "not configured", "available":slack_ready, "display_name":"Slack workspace", "destination":slack_destination},
+        {"provider":"slack", "status":slack_status if slack_official else "not configured", "mode":"configured" if slack_official else "not configured", "available":slack_ready, "display_name":"Slack workspace", "destination":slack_destination},
         {"provider":"jira", "status":"connected" if verify and jira_ready else "configured" if jira_official else "not configured", "mode":"configured" if jira_official else "not configured", "available":jira_ready, "display_name":"Jira Cloud"},
     ]
 
@@ -439,9 +442,12 @@ def require_admin(user=Depends(require_mutation)):
 @app.get("/api/v1/integrations/openrouter")
 def get_openrouter_settings(user=Depends(current_user)):
     config = openrouter_config(user["workspace_id"])
+    with db() as conn:
+        row = conn.execute("SELECT status FROM integrations WHERE workspace_id=? AND provider='openrouter'", (user["workspace_id"],)).fetchone()
+    status = row["status"] if config.configured and row else "configured" if config.configured else "deterministic"
     return {
         "provider": "openrouter",
-        "status": "configured" if config.configured else "deterministic",
+        "status": status,
         "configured": config.configured,
         "model": config.model or "",
         "key_hint": f"••••{config.api_key[-4:]}" if config.api_key else None,
@@ -487,6 +493,13 @@ def update_slack_settings(body: SlackSettingsUpdate, user=Depends(require_admin)
     return {"provider": "slack", "status": status, "configured": status == "configured", "channel_id": channel_id, "token_hint": f"••••{bot_token[-4:]}" if bot_token else None}
 
 
+def _record_integration_test_status(workspace_id: str, provider: str, status: str) -> None:
+    if provider not in {"openrouter", "slack"}:
+        return
+    with db() as conn:
+        conn.execute("UPDATE integrations SET status=?,updated_at=? WHERE workspace_id=? AND provider=?", (status, utcnow(), workspace_id, provider))
+
+
 @app.post("/api/v1/integrations/{provider}/test")
 def test_integration(provider:str,user=Depends(require_responder)):
     try:
@@ -494,11 +507,15 @@ def test_integration(provider:str,user=Depends(require_responder)):
     except UnknownIntegrationError as exc:
         raise HTTPException(404, str(exc)) from exc
     except IntegrationNotConfiguredError as exc:
+        _record_integration_test_status(user["workspace_id"], provider, "failed")
         raise HTTPException(409, str(exc)) from exc
     except IntegrationValidationError as exc:
+        _record_integration_test_status(user["workspace_id"], provider, "failed")
         raise HTTPException(422, str(exc)) from exc
     except IntegrationConnectionError as exc:
+        _record_integration_test_status(user["workspace_id"], provider, "failed")
         raise HTTPException(503, str(exc)) from exc
+    _record_integration_test_status(user["workspace_id"], provider, "connected")
     audit(user["workspace_id"],user["id"],"integration.tested",target_type="integration",target_id=provider);return result
 
 

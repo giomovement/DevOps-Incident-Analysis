@@ -41,6 +41,7 @@ export default function Integrations() {
         method: 'PUT', body: JSON.stringify({ api_key: apiKey || null, model, clear_api_key: clearApiKey }),
       });
       setOpenrouter(result); setApiKey('');
+      window.dispatchEvent(new CustomEvent('dias:integrations-changed',{detail:{provider:'openrouter',configured:result.configured,status:result.status}}));
       setMessage(result.configured ? 'OpenRouter settings saved. Test the connection to verify them.' : 'Deterministic mode enabled. The app will run without AI calls.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not save OpenRouter settings');
@@ -56,6 +57,7 @@ export default function Integrations() {
       setSlack(result); setSlackToken('');
       setProviderStatuses((current) => { const next = { ...current }; delete next.slack; return next; });
       setItems((current) => current.map((item) => item.provider === 'slack' ? { ...item, status: result.status, mode: result.status, destination: result.channel_id } : item));
+      window.dispatchEvent(new CustomEvent('dias:integrations-changed',{detail:{provider:'slack',status:result.status}}));
       setMessage(result.configured ? 'Slack settings saved. Test the connection to verify them.' : 'Slack is not configured. The rest of the app remains available.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not save Slack settings');
@@ -71,17 +73,19 @@ export default function Integrations() {
       setProviderStatuses((current) => ({ ...current, [provider]: 'connected' }));
       if (provider === 'openrouter') setConnection('connected');
       if (provider !== 'openrouter') setItems((current) => current.map((item) => item.provider === provider ? { ...item, status: result.status } : item));
+      window.dispatchEvent(new CustomEvent('dias:integrations-changed',{detail:{provider,status:result.status,configured:true}}));
       const target = result.model ? ` with ${result.model}` : result.channel ? ` to #${result.channel}` : '';
       setMessage(`${provider === 'openrouter' ? 'OpenRouter' : 'Slack'} ${result.status}${target} — no external write was performed.`);
     } catch (error) {
       setProviderStatuses((current) => ({ ...current, [provider]: 'failed' }));
       setMessageFailed(true);
       if (provider === 'openrouter') setConnection('failed');
+      window.dispatchEvent(new CustomEvent('dias:integrations-changed',{detail:{provider,status:'failed',configured:true}}));
       setMessage(error instanceof Error ? error.message : 'Test failed');
     } finally { setTesting(''); }
   }
 
-  const status = connection !== 'idle' ? connection : openrouter?.configured ? 'configured' : 'deterministic';
+  const status = connection !== 'idle' ? connection : openrouter?.status || (openrouter?.configured ? 'configured' : 'deterministic');
 
   return <AppShell title="Configure Integrations" eyebrow="ADMINISTRATIVE CONNECTIONS">
     <section className="integration-intro"><div><ShieldCheck /><span><h2>Test connections before running the app.</h2><p>The app still works without integrations. Without OpenRouter, it defaults to deterministic mode with no LLM use.</p></span></div></section>

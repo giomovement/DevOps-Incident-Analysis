@@ -10,7 +10,7 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
   if (!(init.body instanceof FormData) && init.body && !headers.has('content-type')) headers.set('content-type', 'application/json');
   if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) headers.set('x-csrf-token', decodeURIComponent(cookie('dias_csrf')));
-  const response = await fetch(`${API_URL}${path}`, { ...init, headers, credentials: 'include' });
+  const response = await fetch(`${API_URL}${path}`, { cache: 'no-store', ...init, headers, credentials: 'include' });
   if (!response.ok) {
     const body = await response.json().catch(() => ({ detail: response.statusText })) as { detail?: string };
     throw new Error(body.detail || 'Request failed');

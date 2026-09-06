@@ -58,6 +58,7 @@ def test_openrouter_settings_are_masked_testable_and_removable(tmp_path, monkeyp
         monkeypatch.setattr(connection_tests.httpx, "get", lambda url, *args, **kwargs: KeyResponse() if url.endswith("/key") else ModelsResponse())
         tested = client.post("/api/v1/integrations/openrouter/test", headers=headers)
         assert tested.json() == {"provider": "openrouter", "status": "connected", "model": "test/model"}
+        assert client.get("/api/v1/integrations/openrouter").json()["status"] == "connected"
 
         removed = client.put("/api/v1/integrations/openrouter", headers=headers, json={"model": "test/model", "clear_api_key": True})
         assert removed.json()["status"] == "deterministic"
@@ -84,6 +85,7 @@ def test_openrouter_connection_rejects_an_invalid_key(tmp_path, monkeypatch):
 
         assert tested.status_code == 503
         assert tested.json()["detail"] == "OpenRouter rejected the connection (HTTP 401)"
+        assert client.get("/api/v1/integrations/openrouter").json()["status"] == "failed"
 
 
 def test_incident_chat_uses_deterministic_mode_without_key(tmp_path, monkeypatch):
@@ -135,6 +137,7 @@ def test_slack_settings_are_workspace_scoped_masked_and_testable(tmp_path, monke
         assert tested.json()["workspace"] == "Test workspace"
         assert tested.json()["channel"] == "incidents"
         assert tested.json()["channel_verified"] is True
+        assert next(item for item in client.get("/api/v1/integrations").json() if item["provider"] == "slack")["status"] == "connected"
 
         class MissingChannelResponse:
             def raise_for_status(self): pass
@@ -144,6 +147,7 @@ def test_slack_settings_are_workspace_scoped_masked_and_testable(tmp_path, monke
         rejected = client.post("/api/v1/integrations/slack/test", headers=headers)
         assert rejected.status_code == 422
         assert rejected.json()["detail"] == "Slack channel was not found or is not accessible to this bot"
+        assert next(item for item in client.get("/api/v1/integrations").json() if item["provider"] == "slack")["status"] == "failed"
 
 
 def test_pending_action_can_be_rejected_after_its_integration_becomes_unavailable(tmp_path, monkeypatch):
