@@ -40,13 +40,14 @@ def dashboard_metrics(workspace_id: str, bucket_count: int = 24) -> dict:
             resolution_seconds.append((resolved - created).total_seconds())
 
     timestamps = [parsed for row in event_rows if (parsed := _timestamp(row["timestamp"]))]
-    end = max(timestamps) if timestamps else None
-    start = end - timedelta(hours=24) if end else None
+    latest = max(timestamps) if timestamps else None
+    start = latest.replace(hour=0, minute=0, second=0, microsecond=0) if latest else None
+    end = start + timedelta(days=1) if start else None
     buckets = [0] * bucket_count
     if start and end:
         window_seconds = max((end - start).total_seconds(), 1)
         for timestamp in timestamps:
-            if timestamp < start or timestamp > end:
+            if timestamp < start or timestamp >= end:
                 continue
             index = min(int((timestamp - start).total_seconds() / window_seconds * bucket_count), bucket_count - 1)
             buckets[index] += 1

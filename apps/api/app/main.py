@@ -11,7 +11,7 @@ from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, HTTPExcepti
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
-from .auth import authenticate, create_user, current_user, digest, issue_session, public_user, require_mutation, require_responder
+from .auth import authenticate, create_user, current_data_user, current_user, digest, issue_session, public_user, require_data_mutation, require_data_responder, require_mutation, require_responder
 from .ai_config import openrouter_config
 from .config import settings
 from .connection_tests import IntegrationConnectionError, IntegrationNotConfiguredError, IntegrationValidationError, UnknownIntegrationError, test_provider_connection
@@ -20,7 +20,8 @@ from .database import db, init_db, row_dict, utcnow
 from .integration_config import slack_config
 from .orchestrator import run_analysis
 from .providers import delivery_adapter, integration_available, llm_provider, slack_channel_label
-from .schemas import ActionDecision, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, OpenRouterSettingsUpdate, SignupRequest, SlackSettingsUpdate
+from .modes import normalize_mode
+from .schemas import ActionDecision, AppModeUpdate, ChatRequest, IncidentCreate, IncidentStatusUpdate, LoginRequest, OpenRouterSettingsUpdate, SignupRequest, SlackSettingsUpdate
 
 ALLOWED_EXTENSIONS = {".log", ".txt", ".json", ".jsonl", ".csv"}
 ALLOWED_MIME = {"text/plain", "application/json", "application/x-ndjson", "text/csv", "application/csv", "application/octet-stream"}
@@ -68,15 +69,31 @@ def login(body: LoginRequest, response: Response):
 def logout(response: Response, user=Depends(require_mutation), dias_session: str | None = Cookie(default=None)):
     if dias_session:
         with db() as conn: conn.execute("DELETE FROM sessions WHERE id_hash=?", (digest(dias_session),))
-    response.delete_cookie("dias_session", path="/"); response.delete_cookie("dias_csrf", path="/")
+    response.delete_cookie("dias_session", path="/"); response.delete_cookie("dias_csrf", path="/"); response.delete_cookie("dias_mode", path="/")
 
 
 @app.get("/api/v1/auth/me")
 def me(user=Depends(current_user)): return public_user(user)
 
 
+@app.get("/api/v1/mode")
+def get_mode(dias_mode: str | None = Cookie(default=None), user=Depends(current_user)):
+    mode = normalize_mode(dias_mode)
+    return {"mode": mode, "label": "Test workspace" if mode == "test" else "Production workspace"}
+
+
+@app.patch("/api/v1/mode")
+def set_mode(body: AppModeUpdate, response: Response, user=Depends(require_mutation)):
+    response.set_cookie(
+        "dias_mode", body.mode, httponly=True, secure=settings.session_cookie_secure,
+        samesite="lax", path="/", max_age=7 * 86400,
+    )
+    audit(user["workspace_id"], user["id"], "app.mode_changed", target_type="app_mode", target_id=body.mode)
+    return {"mode": body.mode, "label": "Test workspace" if body.mode == "test" else "Production workspace"}
+
+
 @app.post("/api/v1/incidents", status_code=201)
-def create_incident(body: IncidentCreate, user=Depends(require_responder)):
+def create_incident(body: IncidentCreate, user=Depends(require_data_responder)):
     incident_id, now = str(uuid4()), utcnow()
     with db() as conn:
         conn.execute("INSERT INTO incidents(id,workspace_id,title,description,service,environment,deployment,created_by,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (incident_id,user["workspace_id"],body.title,body.description,body.service,body.environment,body.deployment,user["id"],now,now))
@@ -86,19 +103,19 @@ def create_incident(body: IncidentCreate, user=Depends(require_responder)):
 
 
 @app.get("/api/v1/incidents")
-def list_incidents(user=Depends(current_user)):
+def list_incidents(user=Depends(current_data_user)):
     with db() as conn:
         rows = conn.execute("SELECT i.*, (SELECT count(*) FROM findings f WHERE f.incident_id=i.id) finding_count, (SELECT count(*) FROM files x WHERE x.incident_id=i.id) file_count FROM incidents i WHERE workspace_id=? ORDER BY created_at DESC", (user["workspace_id"],)).fetchall()
     return [dict(r) for r in rows]
 
 
 @app.get("/api/v1/dashboard")
-def get_dashboard(user=Depends(current_user)):
+def get_dashboard(user=Depends(current_data_user)):
     return dashboard_metrics(user["workspace_id"])
 
 
 @app.get("/api/v1/incidents/{incident_id}")
-def get_incident(incident_id: str, user=Depends(current_user)):
+def get_incident(incident_id: str, user=Depends(current_data_user)):
     with db() as conn:
         incident = dict(owned_incident(conn,incident_id,user))
         incident["files"]=[dict(r) for r in conn.execute("SELECT id,original_name,content_type,size,sha256,status,warning,created_at FROM files WHERE incident_id=?",(incident_id,)).fetchall()]
@@ -112,7 +129,7 @@ def get_incident(incident_id: str, user=Depends(current_user)):
 
 
 @app.patch("/api/v1/incidents/{incident_id}/status")
-def update_incident_status(incident_id: str, body: IncidentStatusUpdate, user=Depends(require_responder)):
+def update_incident_status(incident_id: str, body: IncidentStatusUpdate, user=Depends(require_data_responder)):
     now = utcnow()
     with db() as conn:
         incident = owned_incident(conn, incident_id, user)
@@ -149,7 +166,7 @@ def update_incident_status(incident_id: str, body: IncidentStatusUpdate, user=De
 
 
 @app.delete("/api/v1/incidents/{incident_id}", status_code=204)
-def delete_incident(incident_id: str, user=Depends(require_responder)):
+def delete_incident(incident_id: str, user=Depends(require_data_responder)):
     with db() as conn:
         incident=owned_incident(conn,incident_id,user); files=conn.execute("SELECT storage_name FROM files WHERE incident_id=?",(incident_id,)).fetchall()
         for file in files: (settings.storage_path/file["storage_name"]).unlink(missing_ok=True)
@@ -158,7 +175,7 @@ def delete_incident(incident_id: str, user=Depends(require_responder)):
 
 
 @app.post("/api/v1/incidents/{incident_id}/files", status_code=201)
-async def upload_files(incident_id: str, files: list[UploadFile] = File(...), user=Depends(require_responder)):
+async def upload_files(incident_id: str, files: list[UploadFile] = File(...), user=Depends(require_data_responder)):
     if len(files)>settings.max_files_per_incident: raise HTTPException(413,f"Maximum {settings.max_files_per_incident} files per upload")
     saved=[]
     with db() as conn:
@@ -189,7 +206,7 @@ async def upload_files(incident_id: str, files: list[UploadFile] = File(...), us
 
 
 @app.post("/api/v1/incidents/{incident_id}/runs", status_code=202)
-def start_run(incident_id: str, background: BackgroundTasks, user=Depends(require_responder)):
+def start_run(incident_id: str, background: BackgroundTasks, user=Depends(require_data_responder)):
     with db() as conn:
         owned_incident(conn,incident_id,user)
         if not conn.execute("SELECT 1 FROM files WHERE incident_id=?",(incident_id,)).fetchone(): raise HTTPException(409,"Upload at least one log file first")
@@ -208,7 +225,7 @@ def start_run(incident_id: str, background: BackgroundTasks, user=Depends(requir
 
 
 @app.get("/api/v1/runs/{run_id}")
-def get_run(run_id: str,user=Depends(current_user)):
+def get_run(run_id: str,user=Depends(current_data_user)):
     with db() as conn:
         row=conn.execute("SELECT r.* FROM runs r JOIN incidents i ON i.id=r.incident_id WHERE r.id=? AND i.workspace_id=?",(run_id,user["workspace_id"])).fetchone()
     if not row: raise HTTPException(404,"Run not found")
@@ -216,7 +233,7 @@ def get_run(run_id: str,user=Depends(current_user)):
 
 
 @app.post("/api/v1/runs/{run_id}/cancel")
-def cancel_run(run_id: str,user=Depends(require_responder)):
+def cancel_run(run_id: str,user=Depends(require_data_responder)):
     with db() as conn:
         row=conn.execute("SELECT r.incident_id FROM runs r JOIN incidents i ON i.id=r.incident_id WHERE r.id=? AND i.workspace_id=?",(run_id,user["workspace_id"])).fetchone()
         if not row: raise HTTPException(404,"Run not found")
@@ -225,7 +242,7 @@ def cancel_run(run_id: str,user=Depends(require_responder)):
 
 
 @app.get("/api/v1/runs/{run_id}/events")
-def run_events(run_id: str,request: Request,user=Depends(current_user)):
+def run_events(run_id: str,request: Request,user=Depends(current_data_user)):
     with db() as conn:
         row=conn.execute("SELECT 1 FROM runs r JOIN incidents i ON i.id=r.incident_id WHERE r.id=? AND i.workspace_id=?",(run_id,user["workspace_id"])).fetchone()
     if not row: raise HTTPException(404,"Run not found")
@@ -245,7 +262,7 @@ def run_events(run_id: str,request: Request,user=Depends(current_user)):
 
 
 @app.get("/api/v1/incidents/{incident_id}/findings")
-def list_findings(incident_id:str,severity:str|None=None,service:str|None=None,min_confidence:float=0,user=Depends(current_user)):
+def list_findings(incident_id:str,severity:str|None=None,service:str|None=None,min_confidence:float=0,user=Depends(current_data_user)):
     query="SELECT * FROM findings WHERE incident_id=? AND confidence>=?"; params:[object]=[incident_id,min_confidence]
     with db() as conn:
         owned_incident(conn,incident_id,user)
@@ -260,7 +277,7 @@ def list_findings(incident_id:str,severity:str|None=None,service:str|None=None,m
 
 
 @app.get("/api/v1/evidence/{evidence_id}")
-def get_evidence(evidence_id:str,user=Depends(current_user)):
+def get_evidence(evidence_id:str,user=Depends(current_data_user)):
     with db() as conn:
         row=conn.execute("SELECT e.* FROM evidence e JOIN incidents i ON i.id=e.incident_id WHERE e.id=? AND i.workspace_id=?",(evidence_id,user["workspace_id"])).fetchone()
     if not row: raise HTTPException(404,"Evidence not found")
@@ -268,7 +285,7 @@ def get_evidence(evidence_id:str,user=Depends(current_user)):
 
 
 @app.post("/api/v1/incidents/{incident_id}/chat", status_code=201)
-async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(require_mutation)):
+async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(require_data_mutation)):
     ai_config = openrouter_config(user["workspace_id"])
 
     with db() as conn:
@@ -370,7 +387,7 @@ async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(requir
 
 
 @app.get("/api/v1/incidents/{incident_id}/chat")
-def chat_history(incident_id:str,user=Depends(current_user)):
+def chat_history(incident_id:str,user=Depends(current_data_user)):
     with db() as conn:
         owned_incident(conn,incident_id,user);rows=conn.execute("SELECT m.* FROM messages m JOIN conversations c ON c.id=m.conversation_id WHERE c.incident_id=? AND c.user_id=? ORDER BY m.created_at",(incident_id,user["id"])).fetchall()
     return [{**dict(r),"citations":json.loads(r["citations"])} for r in rows]
@@ -401,18 +418,18 @@ def decide_action(action_id:str,body:ActionDecision,decision:str,user:dict):
 
 
 @app.post("/api/v1/actions/{action_id}/approve")
-def approve_action(action_id:str,body:ActionDecision,user=Depends(require_responder)): return decide_action(action_id,body,"approved",user)
+def approve_action(action_id:str,body:ActionDecision,user=Depends(require_data_responder)): return decide_action(action_id,body,"approved",user)
 @app.post("/api/v1/actions/{action_id}/reject")
-def reject_action(action_id:str,body:ActionDecision,user=Depends(require_responder)): return decide_action(action_id,body,"rejected",user)
+def reject_action(action_id:str,body:ActionDecision,user=Depends(require_data_responder)): return decide_action(action_id,body,"rejected",user)
 
 
 @app.get("/api/v1/incidents/{incident_id}/cookbook")
-def get_cookbook(incident_id:str,user=Depends(current_user)):
+def get_cookbook(incident_id:str,user=Depends(current_data_user)):
     with db() as conn: owned_incident(conn,incident_id,user);row=conn.execute("SELECT * FROM cookbooks WHERE incident_id=?",(incident_id,)).fetchone()
     if not row: raise HTTPException(404,"Cookbook not generated")
     return dict(row)
 @app.get("/api/v1/incidents/{incident_id}/cookbook.md",response_class=PlainTextResponse)
-def export_cookbook(incident_id:str,user=Depends(current_user)):
+def export_cookbook(incident_id:str,user=Depends(current_data_user)):
     return get_cookbook(incident_id,user)["markdown"]
 
 
@@ -520,6 +537,6 @@ def test_integration(provider:str,user=Depends(require_responder)):
 
 
 @app.get("/api/v1/audit")
-def audit_log(user=Depends(current_user)):
+def audit_log(user=Depends(current_data_user)):
     with db() as conn: rows=conn.execute("SELECT * FROM audit_events WHERE workspace_id=? ORDER BY created_at DESC LIMIT 200",(user["workspace_id"],)).fetchall()
     return [{**dict(r),"details":json.loads(r["details"])} for r in rows]

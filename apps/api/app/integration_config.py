@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from .config import settings
 from .database import db
+from .modes import account_workspace_id
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,7 @@ class SlackConfig:
 
 
 def slack_config(workspace_id: str | None = None) -> SlackConfig:
+    workspace_id = account_workspace_id(workspace_id) if workspace_id else None
     if workspace_id:
         with db() as conn:
             row = conn.execute(

@@ -31,6 +31,8 @@ def test_dashboard_metrics_uses_workspace_evidence_and_resolution_times(tmp_path
     assert result["mean_time_to_detect_seconds"] is None
     assert result["mean_time_to_resolve_seconds"] == 1800
     assert result["resolved_sample_size"] == 1
-    assert result["event_volume"]["total"] == 2
+    assert result["event_volume"]["total"] == 1
     assert max(result["event_volume"]["buckets"]) == 1
     assert len(result["event_volume"]["buckets"]) == 24
+    assert result["event_volume"]["start"] == "2026-09-06T00:00:00+00:00"
+    assert result["event_volume"]["end"] == "2026-09-07T00:00:00+00:00"

@@ -28,6 +28,10 @@ class IncidentStatusUpdate(BaseModel):
     status: Literal["active", "resolved"]
 
 
+class AppModeUpdate(BaseModel):
+    mode: Literal["prod", "test"]
+
+
 class ActionDecision(BaseModel):
     comment: str | None = Field(default=None, max_length=1000)
     payload_hash: str

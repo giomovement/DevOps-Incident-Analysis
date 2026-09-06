@@ -9,6 +9,7 @@ from fastapi import Cookie, Depends, Header, HTTPException, Response, status
 
 from .config import settings
 from .database import db, utcnow
+from .modes import data_workspace_id, normalize_mode
 
 password_hasher = PasswordHasher(time_cost=3, memory_cost=65536, parallelism=4)
 SESSION_DAYS = 7
@@ -58,6 +59,17 @@ def current_user(dias_session: str | None = Cookie(default=None)):
     return dict(row)
 
 
+def current_data_user(
+    user=Depends(current_user),
+    dias_mode: str | None = Cookie(default=None),
+):
+    scoped_user = dict(user)
+    scoped_user["account_workspace_id"] = user["workspace_id"]
+    scoped_user["app_mode"] = normalize_mode(dias_mode)
+    scoped_user["workspace_id"] = data_workspace_id(user["workspace_id"], scoped_user["app_mode"])
+    return scoped_user
+
+
 def require_mutation(
     user=Depends(current_user),
     dias_session: str | None = Cookie(default=None),
@@ -74,6 +86,23 @@ def require_mutation(
 
 
 def require_responder(user=Depends(require_mutation)):
+    if user["role"] not in ("admin", "responder"):
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "Responder role required")
+    return user
+
+
+def require_data_mutation(
+    user=Depends(require_mutation),
+    dias_mode: str | None = Cookie(default=None),
+):
+    scoped_user = dict(user)
+    scoped_user["account_workspace_id"] = user["workspace_id"]
+    scoped_user["app_mode"] = normalize_mode(dias_mode)
+    scoped_user["workspace_id"] = data_workspace_id(user["workspace_id"], scoped_user["app_mode"])
+    return scoped_user
+
+
+def require_data_responder(user=Depends(require_data_mutation)):
     if user["role"] not in ("admin", "responder"):
         raise HTTPException(status.HTTP_403_FORBIDDEN, "Responder role required")
     return user
