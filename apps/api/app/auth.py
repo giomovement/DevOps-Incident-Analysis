@@ -115,7 +115,7 @@ def public_user(user: dict) -> dict:
 def create_user(email: str, password: str, display_name: str):
     user_id = str(uuid4())
     with db() as conn:
-        count = conn.execute("SELECT count(*) FROM users").fetchone()[0]
+        count = conn.execute("SELECT count(*) AS total FROM users").fetchone()["total"]
         role = "admin" if count == 0 else "responder"
         conn.execute(
             "INSERT INTO users(id,email,password_hash,display_name,role,workspace_id,created_at) VALUES(?,?,?,?,?,'default',?)",

@@ -7,6 +7,8 @@ apps/api/data/
 apps/web/.vinext/
 apps/web/dist/
 apps/web/node_modules/
+apps/web/.next/
+.vercel/
 __pycache__/
 .pytest_cache/
 .venv/

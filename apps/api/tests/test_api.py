@@ -7,9 +7,7 @@ from fastapi.testclient import TestClient
 
 def test_human_approved_incident_flow(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DIAS_DATABASE_PATH", str(tmp_path / "app.sqlite3"))
-    monkeypatch.setenv("DIAS_CHECKPOINT_PATH", str(tmp_path / "checkpoints.sqlite3"))
     monkeypatch.setenv("DIAS_STORAGE_PATH", str(tmp_path / "uploads"))
-    monkeypatch.setenv("DIAS_ARTIFACT_PATH", str(tmp_path / "artifacts"))
     monkeypatch.setenv("DIAS_INTEGRATIONS_MODE", "mock")
     import app.config as config
     importlib.reload(config)
@@ -38,10 +36,45 @@ def test_human_approved_incident_flow(tmp_path: Path, monkeypatch):
         assert upload.status_code == 201
         run = client.post(f"/api/v1/incidents/{incident['id']}/runs", headers=headers)
         assert run.status_code == 202
+        assert list((tmp_path / "uploads").iterdir()) == []
         detail = client.get(f"/api/v1/incidents/{incident['id']}").json()
         assert detail["findings"]
         assert detail["findings"][0]["evidence"]
+        assert detail["cookbook"]["markdown"].startswith("# Incident Response Cookbook")
         assert detail["status"] == "active"
+
+        combined = client.post(
+            "/api/v1/incidents/analyze",
+            headers=headers,
+            data={"title": "One-request analysis", "service": "checkout", "environment": "production"},
+            files=[("files", ("combined.log", b"2026-09-05T12:05:00Z ERROR database connection pool exhausted trace_id=req-2", "text/plain"))],
+        )
+        assert combined.status_code == 201
+        combined_result = combined.json()
+        assert combined_result["status"] in ("completed", "awaiting_approval")
+        combined_detail = client.get(f"/api/v1/incidents/{combined_result['incident_id']}").json()
+        assert combined_detail["findings"]
+        assert combined_detail["cookbook"]["markdown"].startswith("# Incident Response Cookbook")
+        assert list((tmp_path / "uploads").iterdir()) == []
+
+        too_many = client.post(
+            "/api/v1/incidents/analyze",
+            headers=headers,
+            data={"title": "Too many files"},
+            files=[("files", (f"file-{index}.log", b"ERROR test", "text/plain")) for index in range(6)],
+        )
+        assert too_many.status_code == 413
+        assert all(item["title"] != "Too many files" for item in client.get("/api/v1/incidents").json())
+
+        too_large = client.post(
+            "/api/v1/incidents/analyze",
+            headers=headers,
+            data={"title": "Oversized upload"},
+            files=[("files", ("large.log", b"x" * (3 * 1024 * 1024 + 1), "text/plain"))],
+        )
+        assert too_large.status_code == 413
+        assert all(item["title"] != "Oversized upload" for item in client.get("/api/v1/incidents").json())
+        assert list((tmp_path / "uploads").iterdir()) == []
 
         resolved = client.patch(f"/api/v1/incidents/{incident['id']}/status", headers=headers, json={"status":"resolved"})
         assert resolved.status_code == 200

@@ -10,9 +10,17 @@ A local-first, production-shaped incident command center that turns operational 
 
 The frontend also runs with `npm run dev` from `apps/web`. The API runs with `uvicorn app.main:app --reload` from `apps/api` after installing `requirements.txt` into a Python environment.
 
+## Database selection
+
+Local development and automated tests use SQLite by default. Set `DIAS_DATABASE_URL` to a PostgreSQL connection string to use PostgreSQL instead; this is the intended database for hosted deployments. `DIAS_DATABASE_PATH` is ignored while `DIAS_DATABASE_URL` is configured.
+
+## Vercel deployment
+
+The repository is prepared as two Vercel projects: `apps/api` for FastAPI and `apps/web` for Next.js. The web project proxies `/api` to the API project so authentication cookies remain same-origin. Follow [VERCEL_DEPLOYMENT.md](VERCEL_DEPLOYMENT.md) for the exact dashboard settings.
+
 ## Safety model
 
-- `.log`, `.txt`, `.json`, `.jsonl`, and `.csv` only; up to 10 files and 250 MB per incident.
+- `.log`, `.txt`, `.json`, `.jsonl`, and `.csv` only; up to 5 files and 3 MB per incident for hosted compatibility.
 - Likely secrets are masked during normalization.
 - Remediation steps are suggestions and are never executed.
 - Every Slack/Jira write requires a Responder or Admin to approve the exact payload hash.
@@ -32,6 +40,6 @@ DIAS_SLACK_BOT_TOKEN=xoxb-... # bot token; never commit this value
 DIAS_SLACK_DEFAULT_CHANNEL=C0123456789 # Slack channel ID
 ```
 
-Restart the API and worker containers, then use **Settings → Integrations → Test connection**. Analysis still only creates a draft; `chat.postMessage` is called solely when a Responder or Admin approves that draft.
+Restart the API container, then use **Settings → Integrations → Test connection**. Analysis still only creates a draft; `chat.postMessage` is called solely when a Responder or Admin approves that draft.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for contracts, data flow, threat boundaries, and production migration guidance.

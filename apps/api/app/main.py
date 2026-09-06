@@ -3,11 +3,10 @@ import hashlib
 import json
 import re
 import secrets
-import sqlite3
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import BackgroundTasks, Cookie, Depends, FastAPI, File, HTTPException, Request, Response, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 
@@ -16,7 +15,7 @@ from .ai_config import openrouter_config
 from .config import settings
 from .connection_tests import IntegrationConnectionError, IntegrationNotConfiguredError, IntegrationValidationError, UnknownIntegrationError, test_provider_connection
 from .dashboard_metrics import dashboard_metrics
-from .database import db, init_db, row_dict, utcnow
+from .database import db, init_db, is_integrity_error, is_operational_error, row_dict, using_postgres, utcnow
 from .integration_config import slack_config
 from .orchestrator import run_analysis
 from .providers import delivery_adapter, integration_available, llm_provider, slack_channel_label
@@ -51,8 +50,12 @@ def health(): return {"status": "ok", "service": settings.app_name, "integration
 
 @app.post("/api/v1/auth/signup", status_code=201)
 def signup(body: SignupRequest, response: Response):
-    try: user = create_user(body.email, body.password, body.display_name)
-    except sqlite3.IntegrityError: raise HTTPException(409, "An account with that email already exists")
+    try:
+        user = create_user(body.email, body.password, body.display_name)
+    except Exception as exc:
+        if not is_integrity_error(exc):
+            raise
+        raise HTTPException(409, "An account with that email already exists") from exc
     csrf = issue_session(response, user["id"]); audit(user["workspace_id"], user["id"], "auth.signup", target_type="user", target_id=user["id"])
     return {"user": public_user(user), "csrf_token": csrf}
 
@@ -114,6 +117,54 @@ def get_dashboard(user=Depends(current_data_user)):
     return dashboard_metrics(user["workspace_id"])
 
 
+@app.post("/api/v1/incidents/analyze", status_code=201)
+async def create_and_analyze_incident(
+    files: list[UploadFile] = File(...),
+    title: str = Form(..., min_length=3, max_length=160),
+    description: str | None = Form(default=None, max_length=4000),
+    service: str | None = Form(default=None, max_length=120),
+    environment: str | None = Form(default=None, max_length=80),
+    deployment: str | None = Form(default=None, max_length=120),
+    user=Depends(require_data_responder),
+):
+    """Vercel-safe flow: upload and analyze within one function invocation."""
+    incident = create_incident(
+        IncidentCreate(
+            title=title,
+            description=description or None,
+            service=service or None,
+            environment=environment or None,
+            deployment=deployment or None,
+        ),
+        user,
+    )
+    try:
+        await upload_files(incident["id"], files, user)
+        run = create_run_record(incident["id"], user)
+        # The graph is synchronous and some nodes bridge to async AI providers.
+        # Run it off the request event loop so those bridges remain valid.
+        await asyncio.to_thread(run_analysis, run["id"])
+        with db() as conn:
+            completed = conn.execute("SELECT status,current_phase FROM runs WHERE id=?", (run["id"],)).fetchone()
+        return {
+            "incident_id": incident["id"],
+            "run_id": run["id"],
+            "status": completed["status"],
+            "current_phase": completed["current_phase"],
+        }
+    except Exception:
+        # Avoid leaving an empty incident when validation fails before analysis.
+        with db() as conn:
+            file_rows = conn.execute("SELECT storage_name FROM files WHERE incident_id=?", (incident["id"],)).fetchall()
+            conn.execute("DELETE FROM log_events_fts WHERE incident_id=?", (incident["id"],))
+            conn.execute("DELETE FROM incidents WHERE id=?", (incident["id"],))
+        for file_row in file_rows:
+            storage_name = str(file_row["storage_name"] or "")
+            if storage_name and storage_name == Path(storage_name).name:
+                (settings.storage_path / storage_name).unlink(missing_ok=True)
+        raise
+
+
 @app.get("/api/v1/incidents/{incident_id}")
 def get_incident(incident_id: str, user=Depends(current_data_user)):
     with db() as conn:
@@ -146,11 +197,12 @@ def update_incident_status(incident_id: str, body: IncidentStatusUpdate, user=De
         if run:
             message = f"Incident status changed from {previous_status.upper()} to {body.status.upper()} by {user['display_name']}"
             cursor = conn.execute(
-                "INSERT INTO workflow_events(run_id,phase,status,message,payload,created_at) VALUES(?,'incident_status','completed',?,?,?)",
+                "INSERT INTO workflow_events(run_id,phase,status,message,payload,created_at) VALUES(?,'incident_status','completed',?,?,?) RETURNING id",
                 (run["id"], message, json.dumps({"from": previous_status, "to": body.status, "actor_id": user["id"]}), now),
             )
+            event_id = cursor.fetchone()["id"]
             event = {
-                "id": cursor.lastrowid,
+                "id": event_id,
                 "run_id": run["id"],
                 "phase": "incident_status",
                 "status": "completed",
@@ -177,36 +229,42 @@ def delete_incident(incident_id: str, user=Depends(require_data_responder)):
 @app.post("/api/v1/incidents/{incident_id}/files", status_code=201)
 async def upload_files(incident_id: str, files: list[UploadFile] = File(...), user=Depends(require_data_responder)):
     if len(files)>settings.max_files_per_incident: raise HTTPException(413,f"Maximum {settings.max_files_per_incident} files per upload")
-    saved=[]
+    validated_uploads = []
+    for upload in files:
+        name=Path(upload.filename or "").name; extension=Path(name).suffix.lower()
+        if extension not in ALLOWED_EXTENSIONS: raise HTTPException(415,f"Unsupported file type: {extension or 'none'}")
+        if upload.content_type and upload.content_type not in ALLOWED_MIME: raise HTTPException(415,f"Unexpected MIME type: {upload.content_type}")
+        validated_uploads.append((upload, name, extension))
+    saved=[]; saved_paths=[]
     with db() as conn:
         owned_incident(conn,incident_id,user)
-        existing=conn.execute("SELECT count(*),coalesce(sum(size),0) FROM files WHERE incident_id=?",(incident_id,)).fetchone()
-        if existing[0]+len(files)>settings.max_files_per_incident: raise HTTPException(413,"Incident file-count limit exceeded")
-        total=existing[1]
-        for upload in files:
-            name=Path(upload.filename or "").name; extension=Path(name).suffix.lower()
-            if extension not in ALLOWED_EXTENSIONS: raise HTTPException(415,f"Unsupported file type: {extension or 'none'}")
-            if upload.content_type and upload.content_type not in ALLOWED_MIME: raise HTTPException(415,f"Unexpected MIME type: {upload.content_type}")
+        existing=conn.execute("SELECT count(*) AS file_count,coalesce(sum(size),0) AS total_size FROM files WHERE incident_id=?",(incident_id,)).fetchone()
+        if existing["file_count"]+len(files)>settings.max_files_per_incident: raise HTTPException(413,"Incident file-count limit exceeded")
+        total=existing["total_size"]
+        for upload, name, extension in validated_uploads:
             file_id,storage_name=str(uuid4()),f"{uuid4().hex}{extension}"; path=settings.storage_path/storage_name; sha=hashlib.sha256(); size=0; sample=b""
             try:
                 with path.open("xb") as target:
                     while chunk:=await upload.read(1024*1024):
                         size+=len(chunk); total+=len(chunk)
-                        if total>settings.max_incident_bytes: raise HTTPException(413,"Incident upload exceeds 250 MB")
+                        if total>settings.max_incident_bytes: raise HTTPException(413,"Incident upload exceeds 3 MB")
                         if len(sample)<8192: sample+=chunk[:8192-len(sample)]
                         sha.update(chunk); target.write(chunk)
                 if b"\x00" in sample: raise HTTPException(415,"Binary content is not accepted")
                 sample.decode("utf-8")
                 conn.execute("INSERT INTO files(id,incident_id,original_name,storage_name,content_type,size,sha256,status,created_at) VALUES(?,?,?,?,?,?,?,'validated',?)",(file_id,incident_id,name,storage_name,upload.content_type,size,sha.hexdigest(),utcnow()))
+                saved_paths.append(path)
                 saved.append({"id":file_id,"original_name":name,"size":size,"sha256":sha.hexdigest(),"status":"validated"})
             except Exception:
-                path.unlink(missing_ok=True); raise
+                path.unlink(missing_ok=True)
+                for saved_path in saved_paths:
+                    saved_path.unlink(missing_ok=True)
+                raise
     audit(user["workspace_id"],user["id"],"files.uploaded",incident_id,"file_batch",None,{"count":len(saved),"bytes":sum(x["size"] for x in saved)})
     return saved
 
 
-@app.post("/api/v1/incidents/{incident_id}/runs", status_code=202)
-def start_run(incident_id: str, background: BackgroundTasks, user=Depends(require_data_responder)):
+def create_run_record(incident_id: str, user: dict) -> dict:
     with db() as conn:
         owned_incident(conn,incident_id,user)
         if not conn.execute("SELECT 1 FROM files WHERE incident_id=?",(incident_id,)).fetchone(): raise HTTPException(409,"Upload at least one log file first")
@@ -215,13 +273,19 @@ def start_run(incident_id: str, background: BackgroundTasks, user=Depends(requir
         run_id,thread_id=str(uuid4()),str(uuid4()); now=utcnow()
         conn.execute("INSERT INTO runs(id,incident_id,thread_id,status,current_phase,created_at) VALUES(?,?,?,'queued','queued',?)",(run_id,incident_id,thread_id,now))
         conn.execute("INSERT INTO workflow_events(run_id,phase,status,message,created_at) VALUES(?,'queued','queued','Analysis queued',?)",(run_id,now))
-    if settings.job_mode == "dramatiq":
-        from .worker import analyze_incident
-        analyze_incident.send(run_id)
-    else:
-        background.add_task(run_analysis,run_id)
     audit(user["workspace_id"],user["id"],"analysis.started",incident_id,"run",run_id)
     return {"id":run_id,"incident_id":incident_id,"status":"queued","thread_id":thread_id}
+
+
+@app.post("/api/v1/incidents/{incident_id}/runs", status_code=202)
+def start_run(incident_id: str, user=Depends(require_data_responder)):
+    run = create_run_record(incident_id, user)
+    # Hosted functions are not guaranteed to continue background work after the
+    # response returns, so this compatibility route also finishes in-request.
+    run_analysis(run["id"])
+    with db() as conn:
+        completed = conn.execute("SELECT status,current_phase FROM runs WHERE id=?", (run["id"],)).fetchone()
+    return {**run, "status": completed["status"], "current_phase": completed["current_phase"]}
 
 
 @app.get("/api/v1/runs/{run_id}")
@@ -312,12 +376,21 @@ async def incident_chat(incident_id: str, body: ChatRequest, user=Depends(requir
 
         terms = " OR ".join(re.findall(r"[A-Za-z0-9_-]{3,}", body.content)[:8]) or "error"
         try:
-            evidence = conn.execute(
-                "SELECT e.* FROM log_events_fts f JOIN evidence e ON e.event_id=f.event_id "
-                "WHERE f.incident_id=? AND log_events_fts MATCH ? LIMIT 5",
-                (incident_id, terms),
-            ).fetchall()
-        except sqlite3.OperationalError:
+            if using_postgres():
+                evidence = conn.execute(
+                    "SELECT e.* FROM log_events_fts f JOIN evidence e ON e.event_id=f.event_id "
+                    "WHERE f.incident_id=? AND to_tsvector('english', f.message) @@ plainto_tsquery('english', ?) LIMIT 5",
+                    (incident_id, terms.replace(" OR ", " ")),
+                ).fetchall()
+            else:
+                evidence = conn.execute(
+                    "SELECT e.* FROM log_events_fts f JOIN evidence e ON e.event_id=f.event_id "
+                    "WHERE f.incident_id=? AND log_events_fts MATCH ? LIMIT 5",
+                    (incident_id, terms),
+                ).fetchall()
+        except Exception as exc:
+            if not is_operational_error(exc):
+                raise
             evidence = []
         if not evidence:
             evidence = conn.execute(

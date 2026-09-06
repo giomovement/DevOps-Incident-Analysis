@@ -1,12 +1,10 @@
 import asyncio
 import hashlib
 import json
-import sqlite3
 from collections import Counter
 from pathlib import Path
 from uuid import uuid4
 
-from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.graph import END, START, StateGraph
 
 from .config import settings
@@ -67,7 +65,7 @@ def emit(run_id: str, phase: str, status: str, message: str, payload: dict | Non
 def cancelled(run_id: str) -> bool:
     with db() as conn:
         row = conn.execute("SELECT cancel_requested FROM runs WHERE id=?", (run_id,)).fetchone()
-    return bool(row and row[0])
+    return bool(row and row["cancel_requested"])
 
 
 def validate_upload(state: IncidentState) -> dict:
@@ -86,7 +84,7 @@ def parse_logs(state: IncidentState) -> dict:
     with db() as conn:
         existing = conn.execute("SELECT id FROM log_events WHERE incident_id=?", (incident_id,)).fetchall()
         if existing:
-            refs = [r[0] for r in existing]
+            refs = [r["id"] for r in existing]
         else:
             for file in state["file_manifest"]:
                 path = settings.storage_path / file["storage_name"]
@@ -124,7 +122,7 @@ def classify_events(state: IncidentState) -> dict:
             rationale = f"{len(items)} correlated event(s) match the {issue.replace('_',' ')} signature."
             timestamps = [item[0]["timestamp"] for item in items if item[0]["timestamp"]]
             conn.execute("INSERT INTO findings(id,incident_id,run_id,issue_type,severity,confidence,service,root_cause,rationale,first_observed,last_observed,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", (fid, incident_id, run_id, issue, severity, confidence, service, root, rationale, min(timestamps) if timestamps else None, max(timestamps) if timestamps else None, utcnow()))
-            source = conn.execute("SELECT original_name FROM files WHERE id=?", (sample["file_id"],)).fetchone()[0]
+            source = conn.execute("SELECT original_name FROM files WHERE id=?", (sample["file_id"],)).fetchone()["original_name"]
             source_label = f"{source}:{sample['line_start']}–{sample['line_end']}"
             conn.execute("INSERT INTO evidence(id,incident_id,finding_id,event_id,excerpt,source_label,line_start,line_end,content_hash,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)", (eid, incident_id, fid, sample["id"], sample["message"][:1800], source_label, sample["line_start"], sample["line_end"], sample["content_hash"], utcnow()))
             findings.append({"id": fid, "issue_type": issue, "severity": severity, "confidence": round(confidence, 2), "service": service, "root_cause": root, "rationale": rationale, "evidence_ids": [eid]}); evidence_refs.append(eid)
@@ -449,9 +447,9 @@ def cookbook(state: IncidentState) -> dict:
                 if step not in seen: lines.append(f"- [ ] {step}"); seen.add(step)
         lines.append("")
     lines.extend(["## Monitoring", "- [ ] Watch error rate, latency, resource saturation, and dependency health.", "", "## Post-incident follow-up", "- [ ] Record the verified root cause, contributing factors, ownership, and prevention actions."])
-    markdown = "\n".join(lines); cid = str(uuid4()); artifact = settings.artifact_path / f"{state['incident_id']}.md"; artifact.write_text(markdown, encoding="utf-8")
+    markdown = "\n".join(lines); cid = str(uuid4())
     with db() as conn:
-        conn.execute("INSERT INTO cookbooks(id,incident_id,markdown,artifact_path,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(incident_id) DO UPDATE SET markdown=excluded.markdown,artifact_path=excluded.artifact_path,updated_at=excluded.updated_at", (cid, state["incident_id"], markdown, str(artifact), utcnow(), utcnow()))
+        conn.execute("INSERT INTO cookbooks(id,incident_id,markdown,artifact_path,created_at,updated_at) VALUES(?,?,?,NULL,?,?) ON CONFLICT(incident_id) DO UPDATE SET markdown=excluded.markdown,artifact_path=NULL,updated_at=excluded.updated_at", (cid, state["incident_id"], markdown, utcnow(), utcnow()))
     emit(state["run_id"], "cookbook", "completed", "Cookbook generated")
     return {"cookbook_ref": cid, "current_phase": "cookbook", "completed_nodes": ["cookbook"]}
 
@@ -488,12 +486,10 @@ def cookbook_with_ai(state: IncidentState) -> dict:
         )
         markdown = _validate_cookbook(payload.get("markdown"))
         cid = str(uuid4())
-        artifact = settings.artifact_path / f"{state['incident_id']}.md"
-        artifact.write_text(markdown, encoding="utf-8")
         with db() as conn:
             conn.execute(
-                "INSERT INTO cookbooks(id,incident_id,markdown,artifact_path,created_at,updated_at) VALUES(?,?,?,?,?,?) ON CONFLICT(incident_id) DO UPDATE SET markdown=excluded.markdown,artifact_path=excluded.artifact_path,updated_at=excluded.updated_at",
-                (cid, state["incident_id"], markdown, str(artifact), utcnow(), utcnow()),
+                "INSERT INTO cookbooks(id,incident_id,markdown,artifact_path,created_at,updated_at) VALUES(?,?,?,NULL,?,?) ON CONFLICT(incident_id) DO UPDATE SET markdown=excluded.markdown,artifact_path=NULL,updated_at=excluded.updated_at",
+                (cid, state["incident_id"], markdown, utcnow(), utcnow()),
             )
         emit(state["run_id"], "cookbook", "completed", "AI-generated cookbook ready", {"source": "ai", "model": openrouter_config(state.get("workspace_id")).model})
         return {"cookbook_ref": cid, "current_phase": "cookbook", "completed_nodes": ["cookbook"]}
@@ -518,13 +514,13 @@ def build_graph():
     for name, node in [("validate_upload", validate_upload), ("parse", parse_logs), ("classify", classify_events), ("correlate", correlate), ("recommend", remediate_with_ai), ("draft_actions", draft_actions), ("cookbook", cookbook_with_ai), ("finish", finish)]: graph.add_node(name, node)
     graph.add_edge(START, "validate_upload")
     for left, right in zip(["validate_upload","parse","classify","correlate","recommend","draft_actions","cookbook","finish"], ["parse","classify","correlate","recommend","draft_actions","cookbook","finish",END]): graph.add_edge(left, right)
-    checkpoint_conn = sqlite3.connect(settings.checkpoint_path, check_same_thread=False)
-    return graph.compile(checkpointer=SqliteSaver(checkpoint_conn))
+    return graph.compile()
 
 
 _graph = None
 def run_analysis(run_id: str) -> None:
     global _graph
+    files: list[dict] = []
     try:
         with db() as conn:
             run = conn.execute("SELECT r.*,i.workspace_id,i.title,i.description,i.service,i.environment,i.deployment FROM runs r JOIN incidents i ON i.id=r.incident_id WHERE r.id=?", (run_id,)).fetchone()
@@ -532,8 +528,15 @@ def run_analysis(run_id: str) -> None:
             conn.execute("UPDATE runs SET status='running',started_at=? WHERE id=?", (utcnow(), run_id))
         initial: IncidentState = {"schema_version":"1.0","workspace_id":run["workspace_id"],"incident_id":run["incident_id"],"run_id":run_id,"langgraph_thread_id":run["thread_id"],"file_manifest":files,"incident_context":{"title":run["title"],"description":run["description"],"service":run["service"],"environment":run["environment"],"deployment":run["deployment"]},"status":"running","current_phase":"validate_upload","completed_nodes":[],"cancel_requested":False,"event_refs":[],"evidence_refs":[],"correlation_groups":[],"findings":[],"recommendations":[],"slack_drafts":[],"jira_drafts":[],"errors":[],"warnings":[]}
         _graph = _graph or build_graph()
-        _graph.invoke(initial, {"configurable": {"thread_id": run["thread_id"]}})
+        _graph.invoke(initial)
     except Exception as exc:
         with db() as conn:
             conn.execute("UPDATE runs SET status='failed',completed_at=? WHERE id=?", (utcnow(), run_id))
         emit(run_id, "failed", "failed", f"Analysis stopped: {type(exc).__name__}", {"detail": str(exc)[:500]})
+    finally:
+        # Raw logs are needed only while the analysis graph is running. Evidence,
+        # line provenance, and structured events remain in PostgreSQL/SQLite.
+        for file in files:
+            storage_name = str(file.get("storage_name") or "")
+            if storage_name and storage_name == Path(storage_name).name:
+                (settings.storage_path / storage_name).unlink(missing_ok=True)

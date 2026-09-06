@@ -17,13 +17,13 @@ def _timestamp(value: str | None) -> datetime | None:
 def dashboard_metrics(workspace_id: str, bucket_count: int = 24) -> dict:
     with db() as conn:
         active_incidents = conn.execute(
-            "SELECT count(*) FROM incidents WHERE workspace_id=? AND status NOT IN ('resolved','monitoring')",
+            "SELECT count(*) AS total FROM incidents WHERE workspace_id=? AND status NOT IN ('resolved','monitoring')",
             (workspace_id,),
-        ).fetchone()[0]
+        ).fetchone()["total"]
         critical_findings = conn.execute(
-            "SELECT count(*) FROM findings f JOIN incidents i ON i.id=f.incident_id WHERE i.workspace_id=? AND f.severity='critical'",
+            "SELECT count(*) AS total FROM findings f JOIN incidents i ON i.id=f.incident_id WHERE i.workspace_id=? AND f.severity='critical'",
             (workspace_id,),
-        ).fetchone()[0]
+        ).fetchone()["total"]
         resolved_rows = conn.execute(
             "SELECT created_at,resolved_at FROM incidents WHERE workspace_id=? AND resolved_at IS NOT NULL",
             (workspace_id,),

@@ -1,20 +1,27 @@
+import os
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def default_storage_path() -> Path:
+    return Path("/tmp/dias/uploads") if os.getenv("VERCEL") else Path("data/uploads")
+
+
+def default_secure_cookie() -> bool:
+    return bool(os.getenv("VERCEL"))
 
 
 class Settings(BaseSettings):
     app_name: str = "DevOps Incident Analysis Suite"
     environment: str = "development"
+    database_url: str | None = None
     database_path: Path = Path("data/incidents.sqlite3")
-    checkpoint_path: Path = Path("data/checkpoints.sqlite3")
-    storage_path: Path = Path("data/uploads")
-    artifact_path: Path = Path("data/artifacts")
+    storage_path: Path = Field(default_factory=default_storage_path)
     frontend_origin: str = "http://localhost:3000"
-    session_cookie_secure: bool = False
-    max_incident_bytes: int = 250 * 1024 * 1024
-    max_files_per_incident: int = 10
-    job_mode: str = "inline"
-    redis_url: str = "redis://localhost:6379/0"
+    session_cookie_secure: bool = Field(default_factory=default_secure_cookie)
+    max_incident_bytes: int = 3 * 1024 * 1024
+    max_files_per_incident: int = 5
     integrations_mode: str = "mock"
     openrouter_api_key: str | None = None
     openrouter_base_url: str | None = None
@@ -31,10 +38,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_prefix="DIAS_", extra="ignore")
 
     def ensure_directories(self) -> None:
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        if os.getenv("VERCEL") and not self.database_url:
+            raise RuntimeError("DIAS_DATABASE_URL is required on Vercel")
+        if not self.database_url:
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
         self.storage_path.mkdir(parents=True, exist_ok=True)
-        self.artifact_path.mkdir(parents=True, exist_ok=True)
 
 
 settings = Settings()

@@ -15,9 +15,7 @@ def test_mode_workspace_namespaces_are_separate_from_legacy_data():
 
 def test_prod_and_test_modes_keep_incident_data_isolated(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DIAS_DATABASE_PATH", str(tmp_path / "app.sqlite3"))
-    monkeypatch.setenv("DIAS_CHECKPOINT_PATH", str(tmp_path / "checkpoints.sqlite3"))
     monkeypatch.setenv("DIAS_STORAGE_PATH", str(tmp_path / "uploads"))
-    monkeypatch.setenv("DIAS_ARTIFACT_PATH", str(tmp_path / "artifacts"))
 
     import app.config as config
     import app.database as database

@@ -5,9 +5,7 @@ from pathlib import Path
 
 def _load_modules(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("DIAS_DATABASE_PATH", str(tmp_path / "app.sqlite3"))
-    monkeypatch.setenv("DIAS_CHECKPOINT_PATH", str(tmp_path / "checkpoints.sqlite3"))
     monkeypatch.setenv("DIAS_STORAGE_PATH", str(tmp_path / "uploads"))
-    monkeypatch.setenv("DIAS_ARTIFACT_PATH", str(tmp_path / "artifacts"))
     monkeypatch.setenv("DIAS_OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("DIAS_OPENROUTER_REASONING_MODEL", "test/model")
     monkeypatch.setenv("DIAS_OPENROUTER_BASE_URL_CHAT_COMPLETION", "https://example.test/chat/completions")
@@ -65,6 +63,7 @@ def test_ai_recommend_and_cookbook_nodes_persist_structured_results(tmp_path, mo
     assert json.loads(stored_recommendation["phases"])["remediation"] == ["AI remediation step"]
     assert stored_recommendation["rationale"] == "AI rationale"
     assert "AI monitoring step" in stored_cookbook["markdown"]
+    assert not (tmp_path / "artifacts").exists()
     assert all(json.loads(event["payload"])["source"] == "ai" for event in events)
 
 
