@@ -1,4 +1,3 @@
-from http.client import HTTPException
 import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -21,10 +20,10 @@ class LLMProvider(ABC):
 
 
 class OpenRouterProvider(LLMProvider):
-    if not settings.openrouter_base_url_chat_completion:
-        raise HTTPException(503, "DIAS_OPENROUTER_BASE_URL_CHAT_COMPLETION is not configured")
-
-    endpoint = settings.openrouter_base_url_chat_completion
+    def __init__(self) -> None:
+        if not settings.openrouter_base_url_chat_completion:
+            raise RuntimeError("DIAS_OPENROUTER_BASE_URL_CHAT_COMPLETION is not configured")
+        self.endpoint = settings.openrouter_base_url_chat_completion
 
     async def structured_generate(self, *, model: str, messages: list[dict], schema: dict) -> dict:
         async with httpx.AsyncClient(timeout=60) as client:
@@ -99,6 +98,8 @@ class SlackOfficialAdapter(DeliveryAdapter):
         if not data.get("ok"): raise RuntimeError(data.get("error", "Slack authentication failed"))
         return {"provider": "slack", "status": "connected", "mode": "official", "workspace": data.get("team")}
     def deliver(self, *, destination: str, payload: dict, idempotency_key: str) -> dict:
+        if not payload.get("text"):
+            raise ValueError("Slack message text is required")
         response = httpx.post("https://slack.com/api/chat.postMessage", headers={"Authorization": f"Bearer {self.token}"}, json={"channel": destination, "text": payload["text"], "client_msg_id": idempotency_key}, timeout=30)
         response.raise_for_status(); data = response.json()
         if not data.get("ok"): raise RuntimeError(data.get("error", "Slack delivery failed"))
@@ -129,3 +130,37 @@ def delivery_adapter(provider: str) -> DeliveryAdapter:
         if provider == "jira" and settings.jira_access_token and settings.jira_cloud_id: return JiraOfficialAdapter(settings.jira_access_token, settings.jira_cloud_id)
         raise RuntimeError(f"{provider.title()} official credentials are not configured")
     return MockDeliveryAdapter(provider)
+
+
+def integration_available(provider: str, verify: bool = True) -> bool:
+    configured = settings.integrations_mode == "official" and (
+        bool(settings.slack_bot_token) if provider == "slack"
+        else bool(settings.jira_access_token and settings.jira_cloud_id) if provider == "jira"
+        else False
+    )
+    if not configured or not verify:
+        return configured
+    try:
+        delivery_adapter(provider).test()
+        return True
+    except Exception:
+        return False
+
+
+def slack_channel_label(channel_id: str) -> str:
+    if not settings.slack_bot_token:
+        return channel_id
+    try:
+        response = httpx.get(
+            "https://slack.com/api/conversations.info",
+            headers={"Authorization": f"Bearer {settings.slack_bot_token}"},
+            params={"channel": channel_id},
+            timeout=20,
+        )
+        response.raise_for_status()
+        data = response.json()
+        if data.get("ok") and data.get("channel", {}).get("name"):
+            return data["channel"]["name"]
+    except Exception:
+        pass
+    return channel_id

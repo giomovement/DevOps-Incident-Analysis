@@ -15,6 +15,8 @@ def test_human_approved_incident_flow(tmp_path: Path, monkeypatch):
     importlib.reload(config)
     import app.database as database
     importlib.reload(database)
+    import app.providers as providers
+    importlib.reload(providers)
     import app.orchestrator as orchestrator
     importlib.reload(orchestrator)
     # Keep this end-to-end workflow test hermetic; dedicated AI-node tests inject
